@@ -502,8 +502,8 @@ const postMergeAdjacentUnits = async (
   if (units.length <= 1) return units;
 
   addDebugLog({
-    title: "L1.5 Post-Merge Pass",
-    request: `Checking ${units.length} units for adjacent merges...`,
+    title: "Step 2: Semantic Regroup Post-Merge",
+    request: `Checking ${units.length} groups for adjacent merges...`,
     response: "(processing...)",
   });
 
@@ -724,9 +724,9 @@ const getAuthorColor = (author, colorMap) => {
 const StepTabs = ({ currentStep, setCurrentStep, maxStep }) => {
   const steps = [
     { id: 0, label: "Input" },
-    { id: 1, label: "L1: Atomic" },
-    { id: 2, label: "L1.5: Validated" },
-    { id: 3, label: "L2: Stacks" },
+    { id: 1, label: "Step 1: Deterministic Grouping" },
+    { id: 2, label: "Step 2: Semantic Regroup" },
+    { id: 3, label: "Step 3: LLM Stack Formation" },
   ];
 
   return (
@@ -768,7 +768,7 @@ const ProgressBar = ({ current, total, label }) => (
   </div>
 );
 
-const MessageBubble = ({ message, colorMap, compact = false }) => {
+const MessageBubble = ({ message, colorMap, compact = false, showGroupIndex = false }) => {
   const colors = getAuthorColor(message.author, colorMap);
   return (
     <div className={`flex gap-2 ${compact ? "py-0.5" : "py-1"}`}>
@@ -782,7 +782,7 @@ const MessageBubble = ({ message, colorMap, compact = false }) => {
         {message.author.charAt(0).toUpperCase()}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-2">
+        <div className="flex items-baseline gap-2 flex-wrap">
           <span
             className={`${compact ? "text-[10px]" : "text-xs"} font-medium ${
               colors.text
@@ -795,6 +795,20 @@ const MessageBubble = ({ message, colorMap, compact = false }) => {
           >
             {formatShortTime(message.created_at)}
           </span>
+          <span
+            onClick={() => navigator.clipboard.writeText(message.id)}
+            className={`${compact ? "text-[10px]" : "text-xs"} text-gray-300 font-mono cursor-pointer hover:text-blue-500 hover:underline`}
+            title="Click to copy"
+          >
+            {message.id}
+          </span>
+          {showGroupIndex && message.groupIndex && (
+            <span
+              className={`${compact ? "text-[10px]" : "text-xs"} bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium`}
+            >
+              group {message.groupIndex}
+            </span>
+          )}
         </div>
         <p
           className={`${
@@ -824,7 +838,7 @@ const UnitCard = ({ unit, colorMap, highlight, badge }) => {
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono text-gray-400">
-            U{unit.index + 1}
+            group {unit.index + 1}
           </span>
           <span className="text-[10px] text-gray-400">
             #{unit.conversation_name}
@@ -862,35 +876,47 @@ const UnitCard = ({ unit, colorMap, highlight, badge }) => {
   );
 };
 
-const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => (
-  <div className="border rounded-lg bg-white overflow-hidden">
-    <div
-      onClick={onToggle}
-      className="p-3 cursor-pointer hover:bg-gray-50 flex items-start justify-between gap-2"
-    >
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-mono text-gray-400">S{index + 1}</span>
-          <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
-            {stack.messages.length}
-          </span>
+const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
+  // Get unique group indices for this stack
+  const groupIndices = [...new Set(stack.messages.map(m => m.groupIndex).filter(Boolean))].sort((a, b) => a - b);
+  
+  return (
+    <div className="border rounded-lg bg-white overflow-hidden">
+      <div
+        onClick={onToggle}
+        className="p-3 cursor-pointer hover:bg-gray-50 flex items-start justify-between gap-2"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-xs font-mono text-gray-400">S{index + 1}</span>
+            <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
+              {stack.messages.length} msgs
+            </span>
+            {groupIndices.length > 0 && (
+              <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
+                {groupIndices.length === 1 
+                  ? `group ${groupIndices[0]}` 
+                  : `groups ${groupIndices.join(', ')}`}
+              </span>
+            )}
+          </div>
+          <h3 className="font-medium text-sm text-gray-800 truncate">
+            {stack.title}
+          </h3>
+          <p className="text-xs text-gray-500 truncate">{stack.summary}</p>
         </div>
-        <h3 className="font-medium text-sm text-gray-800 truncate">
-          {stack.title}
-        </h3>
-        <p className="text-xs text-gray-500 truncate">{stack.summary}</p>
+        <span className="text-gray-400 text-sm">{expanded ? "▼" : "▶"}</span>
       </div>
-      <span className="text-gray-400 text-sm">{expanded ? "▼" : "▶"}</span>
+      {expanded && (
+        <div className="border-t p-2 bg-gray-50 space-y-0.5 max-h-48 overflow-y-auto">
+          {stack.messages.map((m) => (
+            <MessageBubble key={m.id} message={m} colorMap={colorMap} compact showGroupIndex />
+          ))}
+        </div>
+      )}
     </div>
-    {expanded && (
-      <div className="border-t p-2 bg-gray-50 space-y-0.5 max-h-48 overflow-y-auto">
-        {stack.messages.map((m) => (
-          <MessageBubble key={m.id} message={m} colorMap={colorMap} compact />
-        ))}
-      </div>
-    )}
-  </div>
-);
+  );
+};
 
 const DebugLog = ({ log }) => (
   <div className="border border-gray-700 rounded bg-gray-800 overflow-hidden text-xs">
@@ -961,6 +987,7 @@ export default function StackGrouperPOC() {
 
   const [showDebug, setShowDebug] = useState(true);
   const [debugLogs, setDebugLogs] = useState([]);
+  const [showSingleMessageStacks, setShowSingleMessageStacks] = useState(true);
   const debugEndRef = useRef(null);
 
   const colorMap = useMemo(() => ({}), []);
@@ -1005,9 +1032,9 @@ export default function StackGrouperPOC() {
       setAtomicUnits(units);
 
       addDebugLog({
-        title: "L1: Atomic Units",
+        title: "Step 1: Deterministic Grouping",
         request: `Extracted ${messages.length} messages`,
-        response: `Created ${units.length} atomic units using rules:\n• Same thread → extend\n• Same author + <2min → extend\n• Same conv + <1min → extend\n• Continuation signal + <3min → extend\n• Reply-like messages (async) + <24hr → extend`,
+        response: `Created ${units.length} groups using rules:\n• Same thread → extend\n• Same author + <2min → extend\n• Same conv + <1min → extend\n• Continuation signal + <3min → extend\n• Reply-like messages (async) + <24hr → extend`,
       });
 
       setMaxStep(1);
@@ -1066,7 +1093,7 @@ export default function StackGrouperPOC() {
         );
 
         addDebugLog({
-          title: `L1.5 Batch ${batchIdx + 1}/${batches.length} (Units ${
+          title: `Step 2: Semantic Regroup Batch ${batchIdx + 1}/${batches.length} (Groups ${
             batchStart + 1
           }-${batchStart + batch.length})`,
           system: system,
@@ -1184,15 +1211,15 @@ export default function StackGrouperPOC() {
       setValidatedUnits(allAdjustedUnits);
 
       addDebugLog({
-        title: "L1.5 Complete",
-        response: `${atomicUnits.length} units → ${allAdjustedUnits.length} validated units`,
+        title: "Step 2: Semantic Regroup Complete",
+        response: `${atomicUnits.length} groups → ${allAdjustedUnits.length} regrouped`,
       });
 
       setMaxStep(2);
       setCurrentStep(2);
     } catch (err) {
       setError(err.message);
-      addDebugLog({ title: "L1.5 Error", error: err.message });
+      addDebugLog({ title: "Step 2: Semantic Regroup Error", error: err.message });
     } finally {
       setLoading(false);
       setProgress({ current: 0, total: 0, label: "" });
@@ -1237,7 +1264,7 @@ export default function StackGrouperPOC() {
         );
 
         addDebugLog({
-          title: `L2: Unit ${i + 1}`,
+          title: `Step 3: LLM Stack Formation - Group ${i + 1}`,
           system,
           request: userMessage,
           response: "(waiting...)",
@@ -1260,6 +1287,9 @@ export default function StackGrouperPOC() {
 
         const logEntry = { unitIndex: i, unit, decision };
 
+        // Tag messages with their source group index
+        const taggedMessages = unit.messages.map(m => ({ ...m, groupIndex: i + 1 }));
+
         if (
           decision.action === "join" &&
           decision.stack_index &&
@@ -1270,7 +1300,7 @@ export default function StackGrouperPOC() {
             ...currentStacks[stackIdx],
             messages: [
               ...currentStacks[stackIdx].messages,
-              ...unit.messages,
+              ...taggedMessages,
             ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
             title: decision.title || currentStacks[stackIdx].title,
             summary: decision.summary || currentStacks[stackIdx].summary,
@@ -1281,7 +1311,7 @@ export default function StackGrouperPOC() {
             id: generateUUID(),
             title: decision.title || "Untitled",
             summary: decision.summary || "",
-            messages: [...unit.messages],
+            messages: [...taggedMessages],
           });
           logEntry.action = `+ Stack ${currentStacks.length}`;
         }
@@ -1294,12 +1324,12 @@ export default function StackGrouperPOC() {
       }
 
       addDebugLog({
-        title: "L2 Complete",
-        response: `${validatedUnits.length} units → ${currentStacks.length} stacks`,
+        title: "Step 3: LLM Stack Formation Complete",
+        response: `${validatedUnits.length} groups → ${currentStacks.length} stacks`,
       });
     } catch (err) {
       setError(err.message);
-      addDebugLog({ title: "L2 Error", error: err.message });
+      addDebugLog({ title: "Step 3: LLM Stack Formation Error", error: err.message });
     } finally {
       setLoading(false);
       setProgress({ current: 0, total: 0, label: "" });
@@ -1375,7 +1405,7 @@ export default function StackGrouperPOC() {
                 disabled={!jsonInput.trim()}
                 className="mt-3 self-start px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-lg text-sm font-medium"
               >
-                Process → L1
+                Process → Step 1
               </button>
             </div>
           )}
@@ -1392,7 +1422,7 @@ export default function StackGrouperPOC() {
                   disabled={loading || !apiKey}
                   className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded text-sm font-medium"
                 >
-                  {loading ? "⟳ Validating..." : "Validate → L1.5"}
+                  {loading ? "⟳ Validating..." : "Validate → Step 2"}
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
@@ -1440,7 +1470,7 @@ export default function StackGrouperPOC() {
                                 : "bg-blue-50 text-blue-700"
                             }`}
                           >
-                            U{item.unit}: {item.action}{" "}
+                            group {item.unit}: {item.action}{" "}
                             {item.reason && `- ${item.reason}`}
                           </div>
                         ))}
@@ -1459,7 +1489,7 @@ export default function StackGrouperPOC() {
                     disabled={loading || !apiKey}
                     className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded text-sm font-medium"
                   >
-                    {loading ? "⟳ Processing..." : "Form Stacks → L2"}
+                    {loading ? "⟳ Processing..." : "Form Stacks → Step 3"}
                   </button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-3">
@@ -1509,7 +1539,7 @@ export default function StackGrouperPOC() {
                     >
                       <div className="flex justify-between mb-1">
                         <span className="font-medium">
-                          U{entry.unitIndex + 1}
+                          group {entry.unitIndex + 1}
                         </span>
                         <span
                           className={
@@ -1532,26 +1562,37 @@ export default function StackGrouperPOC() {
                 </div>
               </div>
               <div className="w-1/2 flex flex-col overflow-hidden">
-                <div className="px-4 py-2 border-b bg-white">
+                <div className="px-4 py-2 border-b bg-white flex items-center justify-between">
                   <span className="text-sm font-medium">
-                    Stacks ({stacks.length})
+                    Stacks ({stacks.filter(s => showSingleMessageStacks || s.messages.length > 1).length})
                   </span>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={showSingleMessageStacks}
+                      onChange={(e) => setShowSingleMessageStacks(e.target.checked)}
+                      className="rounded"
+                    />
+                    Show single message stacks
+                  </label>
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                  {stacks.map((stack, i) => (
-                    <StackCard
-                      key={stack.id}
-                      stack={stack}
-                      index={i}
-                      colorMap={colorMap}
-                      expanded={expandedStackIndex === i}
-                      onToggle={() =>
-                        setExpandedStackIndex(
-                          expandedStackIndex === i ? null : i
-                        )
-                      }
-                    />
-                  ))}
+                  {stacks
+                    .filter(stack => showSingleMessageStacks || stack.messages.length > 1)
+                    .map((stack, i) => (
+                      <StackCard
+                        key={stack.id}
+                        stack={stack}
+                        index={i}
+                        colorMap={colorMap}
+                        expanded={expandedStackIndex === i}
+                        onToggle={() =>
+                          setExpandedStackIndex(
+                            expandedStackIndex === i ? null : i
+                          )
+                        }
+                      />
+                    ))}
                 </div>
               </div>
             </div>
