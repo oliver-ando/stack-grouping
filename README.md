@@ -29,11 +29,19 @@ This tool processes message events and groups them through three levels:
 ### Level 1: Atomic Units (Deterministic)
 **No API calls required** - Uses deterministic rules in priority order:
 
-1. **Same Thread**: Messages in the same thread are always grouped together, even if interrupted by other conversations
+1. **Same Thread (Highest Priority)**: 
+   - Messages in the same thread are **always** grouped together
+   - No time limit - threads can span hours or days
+   - Handles interruptions: If a thread is interrupted by other messages, subsequent thread messages are merged back into the original unit
+   - Checks both the last message AND any message in the current unit
+   - Checks recently completed units (last 5) to merge thread messages back
+
 2. **Temporal Proximity**: 
    - Same author + same conversation + <2 minutes
    - Same conversation + <1 minute
+
 3. **Continuation Signals**: Short acknowledgments (<3 minutes apart)
+
 4. **Reply-like Messages**: Detects replies using multiple heuristics:
    - Exact reply patterns ("yeah", "yes", "exactly", etc.)
    - Messages starting with reply words ("yeah - i think...")
@@ -41,9 +49,10 @@ This tool processes message events and groups them through three levels:
    - Short elaborations
 
 **Key Features**:
+- Thread messages are grouped regardless of time gaps or interruptions
 - Checks against both last message AND first message of current unit
 - Handles async replies up to 24 hours apart
-- Merges messages back into previous units if they belong to the same thread
+- Automatically merges thread messages back into previous units when interrupted
 
 ### Level 1.5: Validated Units (AI-Powered)
 **Requires Anthropic API key**

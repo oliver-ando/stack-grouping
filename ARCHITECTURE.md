@@ -43,12 +43,25 @@ Raw event data is transformed into a standardized message format:
 
 ### Deterministic Rules (in priority order)
 
-#### Priority 1: Same Thread
+#### Priority 1: Same Thread (Highest Priority)
 - **Rule**: If `msg.thread_id === prev.thread_id` AND both are non-null
-- **Action**: Always extend current unit
-- **Also checks**: If `msg.thread_id` matches ANY message in current unit (handles interruptions)
+- **Action**: Always extend current unit (no time limit)
+- **Also checks**: If `msg.thread_id` matches ANY message in current unit (handles interruptions within unit)
 
-**Special handling**: If a message's thread_id matches a recently completed unit (within last 5 units), merge it into that unit instead of creating a new one. This handles cases where messages from different conversations interrupt a thread.
+**Thread Interruption Handling**: 
+When a message doesn't extend the current unit, the system checks:
+1. **Current unit check**: If the message's thread_id matches any message in the current unit → extend instead of closing
+2. **Previous units check**: If the message's thread_id matches any message in recently completed units (last 5 units) → merge into that unit instead of creating a new one
+
+This ensures that all messages in the same thread are grouped together, even if:
+- Messages from different conversations interrupt the thread
+- There are large time gaps between thread messages
+- The thread spans multiple initial units
+
+**Example**: 
+- Unit 1: Thread messages A, B
+- Interruption: Non-thread message C (different conversation)
+- Thread message D arrives → Merged back into Unit 1 (not Unit 2)
 
 #### Priority 2: Temporal Proximity
 - **Rule 2a**: Same author + same conversation + time difference < 2 minutes
