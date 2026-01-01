@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>L1 Message Segmentation Workflow</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0a0a0f;
+      --bg-card: #13131a;
+      --bg-card-hover: #1a1a24;
+      --bg-node: #1e1e2a;
+      --border: #2a2a38;
+      --border-highlight: #3a3a4a;
+      --text-primary: #e8e8ed;
+      --text-secondary: #9090a0;
+      --text-muted: #606070;
+      --accent-blue: #4a9eff;
+      --accent-purple: #a78bfa;
+      --accent-green: #34d399;
+      --accent-amber: #fbbf24;
+      --accent-rose: #fb7185;
+      --accent-cyan: #22d3ee;
+      --accent-orange: #fb923c;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Space Grotesk', sans-serif;
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 40px 20px;
+      background-image: 
+        radial-gradient(ellipse at 10% 10%, rgba(34, 211, 238, 0.06) 0%, transparent 40%),
+        radial-gradient(ellipse at 90% 90%, rgba(167, 139, 250, 0.05) 0%, transparent 40%);
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 6px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: var(--text-secondary);
+      margin-bottom: 40px;
+      font-size: 0.95rem;
+    }
+
+    .subtitle code {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(167, 139, 250, 0.15);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--accent-purple);
+    }
+
+    /* Main flowchart */
+    .flowchart {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    /* Message input */
+    .message-input {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: linear-gradient(135deg, rgba(74, 158, 255, 0.15), rgba(34, 211, 238, 0.1));
+      border: 2px solid rgba(74, 158, 255, 0.4);
+      border-radius: 12px;
+      padding: 16px 24px;
+      margin-bottom: 20px;
+    }
+
+    .message-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--accent-blue);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+    }
+
+    .message-input-text {
+      font-weight: 600;
+      font-size: 1rem;
+    }
+
+    .message-input-sub {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Arrow */
+    .arrow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      color: var(--text-muted);
+      padding: 8px 0;
+    }
+
+    .arrow svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .arrow-label {
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    /* Decision diamond */
+    .decision {
+      position: relative;
+      width: 300px;
+      padding: 20px 24px;
+      background: var(--bg-node);
+      border: 2px solid var(--accent-rose);
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .decision::before {
+      content: '◇';
+      position: absolute;
+      top: -10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-dark);
+      padding: 0 8px;
+      color: var(--accent-rose);
+      font-size: 0.9rem;
+    }
+
+    .decision-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 8px;
+    }
+
+    .decision-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      background: rgba(0,0,0,0.3);
+      padding: 4px 10px;
+      border-radius: 6px;
+      display: inline-block;
+    }
+
+    /* Branch container */
+    .branch-container {
+      display: flex;
+      justify-content: center;
+      gap: 60px;
+      position: relative;
+    }
+
+    .branch-container::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: calc(50% - 80px);
+      width: 160px;
+      height: 30px;
+      border-left: 2px solid var(--border);
+      border-right: 2px solid var(--border);
+      border-bottom: 2px solid var(--border);
+      border-radius: 0 0 8px 8px;
+    }
+
+    .branch {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 40px;
+    }
+
+    .branch-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 12px;
+      margin-bottom: 12px;
+    }
+
+    .branch-label.yes {
+      background: rgba(52, 211, 153, 0.2);
+      color: var(--accent-green);
+    }
+
+    .branch-label.no {
+      background: rgba(251, 113, 133, 0.2);
+      color: var(--accent-rose);
+    }
+
+    /* Process box */
+    .process {
+      background: var(--bg-node);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 20px;
+      width: 280px;
+      transition: all 0.2s ease;
+    }
+
+    .process:hover {
+      border-color: var(--border-highlight);
+      transform: translateY(-2px);
+    }
+
+    .process.thread {
+      border-color: rgba(34, 211, 238, 0.4);
+      background: linear-gradient(135deg, rgba(34, 211, 238, 0.08), transparent);
+    }
+
+    .process.llm {
+      border-color: rgba(167, 139, 250, 0.4);
+      background: linear-gradient(135deg, rgba(167, 139, 250, 0.08), transparent);
+    }
+
+    .process.result-continue {
+      border-color: rgba(52, 211, 153, 0.4);
+      background: linear-gradient(135deg, rgba(52, 211, 153, 0.08), transparent);
+    }
+
+    .process.result-new {
+      border-color: rgba(251, 191, 36, 0.4);
+      background: linear-gradient(135deg, rgba(251, 191, 36, 0.08), transparent);
+    }
+
+    .process-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .process-icon {
+      font-size: 1rem;
+    }
+
+    .process-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .process-content {
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+
+    .process-content code {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(0,0,0,0.3);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.7rem;
+    }
+
+    .process-content strong {
+      color: var(--text-primary);
+    }
+
+    /* LLM Section */
+    .llm-section {
+      width: 100%;
+      max-width: 700px;
+      margin-top: 20px;
+    }
+
+    .llm-header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.1), transparent);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .llm-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      padding: 4px 10px;
+      background: rgba(167, 139, 250, 0.2);
+      color: var(--accent-purple);
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+
+    .llm-title {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .prompt-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .prompt-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+
+    .prompt-section {
+      background: var(--bg-node);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .prompt-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .prompt-section-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .prompt-section-content {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .prompt-section-content .highlight {
+      background: rgba(251, 191, 36, 0.15);
+      color: var(--accent-amber);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .thread-guidance {
+      background: linear-gradient(135deg, rgba(34, 211, 238, 0.1), rgba(74, 158, 255, 0.05));
+      border: 1px dashed rgba(34, 211, 238, 0.3);
+    }
+
+    .thread-guidance .prompt-section-title {
+      color: var(--accent-cyan);
+    }
+
+    /* Response format */
+    .response-format {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      background: rgba(0,0,0,0.4);
+      padding: 12px;
+      border-radius: 6px;
+      color: var(--text-secondary);
+    }
+
+    .response-format .key {
+      color: var(--accent-purple);
+    }
+
+    .response-format .value {
+      color: var(--accent-green);
+    }
+
+    /* Merge point */
+    .merge-point {
+      width: 16px;
+      height: 16px;
+      background: var(--bg-node);
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      margin: 20px 0;
+    }
+
+    /* Result boxes at bottom */
+    .results-container {
+      display: flex;
+      gap: 30px;
+      margin-top: 20px;
+    }
+
+    .result-box {
+      flex: 1;
+      padding: 20px;
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .result-box.continue {
+      background: linear-gradient(135deg, rgba(52, 211, 153, 0.12), rgba(52, 211, 153, 0.04));
+      border: 2px solid rgba(52, 211, 153, 0.3);
+    }
+
+    .result-box.new {
+      background: linear-gradient(135deg, rgba(251, 191, 36, 0.12), rgba(251, 191, 36, 0.04));
+      border: 2px solid rgba(251, 191, 36, 0.3);
+    }
+
+    .result-icon {
+      font-size: 1.5rem;
+      margin-bottom: 8px;
+    }
+
+    .result-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 6px;
+    }
+
+    .result-desc {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    /* Legend */
+    .legend {
+      margin-top: 40px;
+      padding: 16px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+
+    .legend-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+
+    .legend-items {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .legend-color {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+    }
+
+    .legend-color.thread { background: var(--accent-cyan); }
+    .legend-color.llm { background: var(--accent-purple); }
+    .legend-color.decision { background: var(--accent-rose); }
+    .legend-color.continue { background: var(--accent-green); }
+    .legend-color.new { background: var(--accent-amber); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .branch-container {
+        flex-direction: column;
+        gap: 20px;
+      }
+      .branch-container::before {
+        display: none;
+      }
+      .branch {
+        padding-top: 0;
+      }
+      .results-container {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>L1 Segmentation: Previous-Topic Strategy</h1>
+    <p class="subtitle">How a message is classified using <code>previous-centric</code> LLM strategy</p>
+
+    <div class="flowchart">
+      <!-- Input -->
+      <div class="message-input">
+        <div class="message-icon">💬</div>
+        <div>
+          <div class="message-input-text">Incoming Message</div>
+          <div class="message-input-sub">{ id, content, author, thread_id, ... }</div>
+        </div>
+      </div>
+
+      <div class="arrow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12l7 7 7-7"/>
+        </svg>
+      </div>
+
+      <!-- Thread Check Decision -->
+      <div class="decision">
+        <div class="decision-title">Is this a thread reply?</div>
+        <div class="decision-code">message.thread_id !== null</div>
+      </div>
+
+      <!-- Branching -->
+      <div class="branch-container">
+        <!-- YES Branch - Thread Reply -->
+        <div class="branch">
+          <div class="branch-label yes">YES (Thread Reply)</div>
+          
+          <div class="process thread">
+            <div class="process-header">
+              <span class="process-icon">⟲</span>
+              <span class="process-title">Find Thread Root</span>
+            </div>
+            <div class="process-content">
+              Search <strong>all previous messages</strong> for:<br>
+              <code>m.id === message.thread_id</code><br><br>
+              → Use <strong>thread root's segment</strong> as reference topic
+            </div>
+          </div>
+
+          <div class="arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12l7 7 7-7"/>
+            </svg>
+            <span class="arrow-label">referenceSegment = threadRoot's segment</span>
+          </div>
+        </div>
+
+        <!-- NO Branch - Not Thread -->
+        <div class="branch">
+          <div class="branch-label no">NO (Not a Thread)</div>
+          
+          <div class="process">
+            <div class="process-header">
+              <span class="process-icon">⏮</span>
+              <span class="process-title">Get Previous Message</span>
+            </div>
+            <div class="process-content">
+              Get the <strong>chronologically previous</strong> message in this conversation<br><br>
+              → Use <strong>previous message's segment</strong> as reference topic
+            </div>
+          </div>
+
+          <div class="arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12l7 7 7-7"/>
+            </svg>
+            <span class="arrow-label">referenceSegment = prev msg's segment</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Merge Point -->
+      <div class="merge-point"></div>
+
+      <!-- LLM Section -->
+      <div class="llm-section">
+        <div class="llm-header">
+          <span class="llm-badge">🤖 LLM Call</span>
+          <span class="llm-title">Build Prompt & Classify</span>
+        </div>
+
+        <div class="prompt-box">
+          <div class="prompt-label">Prompt Structure</div>
+
+          <div class="prompt-section">
+            <div class="prompt-section-title">
+              <span>📋</span> Reference Topic Context
+            </div>
+            <div class="prompt-section-content">
+              <strong>PREVIOUS TOPIC [Segment A]:</strong><br>
+              Summary: <span class="highlight">{referenceSegment.summary}</span><br>
+              Participants: {participants}<br><br>
+              <strong>Message History:</strong><br>
+              &nbsp;&nbsp;[5m ago] Alice: "message content..."<br>
+              &nbsp;&nbsp;[3m ago] Bob: "reply content..."<br>
+              &nbsp;&nbsp;<em>(last 15 messages from this topic)</em>
+            </div>
+          </div>
+
+          <div class="prompt-section thread-guidance">
+            <div class="prompt-section-title">
+              <span>⟲</span> Thread Guidance (if thread reply)
+            </div>
+            <div class="prompt-section-content">
+              ⚠️ <strong>IMPORTANT:</strong> This is a THREAD REPLY.<br>
+              Thread replies should <span class="highlight">ALMOST ALWAYS</span> attach to their thread's topic.<br>
+              Only use "NEW" if <strong>COMPLETELY UNRELATED</strong> to the thread topic.<br>
+              <em>Questions, reactions, follow-ups, tangents → same topic</em>
+            </div>
+          </div>
+
+          <div class="prompt-section">
+            <div class="prompt-section-title">
+              <span>💬</span> New Message to Classify
+            </div>
+            <div class="prompt-section-content">
+              <strong>{author}:</strong> "{content}"
+            </div>
+          </div>
+
+          <div class="prompt-section">
+            <div class="prompt-section-title">
+              <span>❓</span> Classification Question
+            </div>
+            <div class="prompt-section-content">
+              <strong>For thread replies:</strong><br>
+              → Attach to thread's topic unless COMPLETELY unrelated<br><br>
+              <strong>For non-thread messages:</strong><br>
+              → Is this about THE SAME SPECIFIC ISSUE as the previous topic?<br>
+              &nbsp;&nbsp;• Same issue = attach to Segment A<br>
+              &nbsp;&nbsp;• Different issue (new bug, new PR, new question) = NEW<br>
+              &nbsp;&nbsp;<em>Note: Keyword overlap is NOT enough!</em>
+            </div>
+          </div>
+
+          <div class="prompt-label" style="margin-top: 16px;">Expected Response</div>
+          <div class="response-format">
+{<br>
+&nbsp;&nbsp;<span class="key">"continues_previous"</span>: <span class="value">true</span> | <span class="value">false</span>,<br>
+&nbsp;&nbsp;<span class="key">"segment"</span>: <span class="value">"A"</span> | <span class="value">"NEW"</span>,<br>
+&nbsp;&nbsp;<span class="key">"role"</span>: <span class="value">"INITIATES"</span> | <span class="value">"DEVELOPS"</span> | <span class="value">"RESPONDS"</span> | <span class="value">"RESOLVES"</span> | <span class="value">"REACTS"</span>,<br>
+&nbsp;&nbsp;<span class="key">"confidence"</span>: <span class="value">0.0-1.0</span>,<br>
+&nbsp;&nbsp;<span class="key">"reasoning"</span>: <span class="value">"one sentence explanation"</span><br>
+}
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12l7 7 7-7"/>
+        </svg>
+        <span class="arrow-label">Parse LLM response</span>
+      </div>
+
+      <!-- Final Decision -->
+      <div class="decision">
+        <div class="decision-title">continues_previous?</div>
+        <div class="decision-code">result.continues_previous === true</div>
+      </div>
+
+      <!-- Results -->
+      <div class="results-container">
+        <div class="result-box continue">
+          <div class="result-icon">🔗</div>
+          <div class="result-title">Attach to Reference Segment</div>
+          <div class="result-desc">
+            Add message to existing segment<br>
+            <code>segmentId = referenceSegment.id</code>
+          </div>
+        </div>
+
+        <div class="result-box new">
+          <div class="result-icon">✨</div>
+          <div class="result-title">Create New Segment</div>
+          <div class="result-desc">
+            Start a new topic segment<br>
+            <code>segmentId = createSegment(message)</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <div class="legend-title">Legend</div>
+      <div class="legend-items">
+        <div class="legend-item">
+          <div class="legend-color thread"></div>
+          <span>Thread-related logic</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color llm"></div>
+          <span>LLM classification</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color decision"></div>
+          <span>Decision point</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color continue"></div>
+          <span>Continue existing segment</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color new"></div>
+          <span>Create new segment</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

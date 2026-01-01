@@ -2455,7 +2455,8 @@ const StrategyConfigPanel = ({ config, setConfig }) => {
   const strategies = [
     { id: 'segment-centric', name: 'Segment-Centric', desc: 'Shows all segments, picks best match' },
     { id: 'previous-centric', name: 'Previous-Topic', desc: 'Classify relative to the previous topic' },
-    { id: 'hybrid', name: 'Hybrid', desc: 'Previous message + recent segments' }
+    { id: 'hybrid', name: 'Hybrid', desc: 'Previous message + recent segments' },
+    { id: 'single-prompt', name: 'Single Prompt', desc: 'One call with all messages, returns all stacks' }
   ];
 
   return (
@@ -2504,7 +2505,7 @@ const StrategyConfigPanel = ({ config, setConfig }) => {
           </div>
           
           {/* These options only apply to segment-centric and hybrid strategies */}
-          {config.strategy !== 'previous-centric' && (
+          {config.strategy !== 'previous-centric' && config.strategy !== 'single-prompt' && (
             <>
               {/* Staleness Threshold - only for hybrid */}
               {config.strategy === 'hybrid' && (
@@ -2875,6 +2876,132 @@ export default function StackGrouperPOC() {
     } catch (err) {
       setError(err.message);
       addDebugLog({ title: "LLM Segmentation Error", error: err.message });
+    } finally {
+      setLoading(false);
+      setProgress({ current: 0, total: 0, label: "" });
+    }
+  };
+
+  // Single Prompt Segmentation - one call with all messages
+  const handleSinglePromptSegmentation = async () => {
+    if (!apiKey) {
+      setError("Please enter your Anthropic API key");
+      return;
+    }
+
+    if (rawMessages.length === 0) {
+      setError("No messages to process");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setLlmSegments([]);
+    setLlmAnnotations([]);
+
+    const systemPrompt = `You are given a list of messages from an Ando workspace in JSON format. Each message is an event with text content and metadata (such as timestamp, author, channel, thread id, or any other fields provided). Your task is to group these messages into semantically related groups called "stacks." Each stack represents a coherent topic, task, project, question, or cluster of messages that belong together. Stacks are similar to conversation clusters or topic threads. Produce **all stacks** in your output. Do not return a sample, subset, or partial result. For each stack, produce a title and a summary and list the messages that belong to that stack. The title should be short and descriptive. The summary should explain why the messages were grouped together and what the cluster is about. Use clear language that would be understandable to a human. Do not omit any message. Every message in the input must be included in exactly one stack. Output the result in valid JSON with the following structure: { "stacks": [ { "title": string, "summary": string, "message_ids": [ list of identifiers referencing each message in this group ], "messages": [ full message objects for each message in this group ] }, ... ] } Here are additional rules and instructions: Make sure each stack meets these criteria: 1. **Semantic coherence**: Messages in the same stack must be related by topic, goal, task, or intent. Use the content and context to determine relationships. 2. **Minimal overlap**: A message belongs in only one stack. Do not duplicate a message across stacks. 3. **Distinct topics**: Stacks should represent distinct subjects or threads of work. If messages are different tasks or topics, they should be in different stacks. 4. **Human readable**: Titles and summaries should be clear and concise. A reader should understand what the stack is about without reading all the messages. 5. **Complete coverage**: Include every message in the input. Do not drop or ignore messages. Follow this structure exactly. Validate your JSON output and ensure it is well formed. Use the field id or a similar unique identifier to reference each message in the output. Begin by analyzing the messages, detecting topics and semantic links. Then produce the JSON output with all stacks including their title, summary, message_ids, and messages.`;
+
+    try {
+      addDebugLog({
+        title: "Single Prompt: Sending request",
+        system: systemPrompt.slice(0, 500) + "...",
+        request: `Sending ${rawMessages.length} messages to LLM`,
+        response: "(waiting...)"
+      });
+
+      setProgress({ current: 1, total: 2, label: "Sending to LLM..." });
+
+      // Format messages as JSON for the prompt
+      const messagesJson = JSON.stringify(rawMessages, null, 2);
+      const userMessage = `Here are the messages to group into stacks:\n\n${messagesJson}`;
+
+      // Calculate max tokens based on message count (rough estimate: ~100 tokens per message for response)
+      const estimatedMaxTokens = Math.min(Math.max(4000, rawMessages.length * 150), 64000);
+
+      const response = await callAnthropic(
+        apiKey,
+        systemPrompt,
+        userMessage,
+        estimatedMaxTokens,
+        selectedModel
+      );
+
+      setProgress({ current: 2, total: 2, label: "Parsing response..." });
+
+      // Parse the response JSON
+      let parsedResponse;
+      try {
+        // Try to extract JSON from the response (in case there's extra text)
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsedResponse = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error("No JSON found in response");
+        }
+      } catch (parseErr) {
+        throw new Error(`Failed to parse LLM response: ${parseErr.message}\n\nResponse: ${response.slice(0, 500)}...`);
+      }
+
+      if (!parsedResponse.stacks || !Array.isArray(parsedResponse.stacks)) {
+        throw new Error("Response missing 'stacks' array");
+      }
+
+      // Transform stacks to segment/annotation format
+      const segments = [];
+      const annotations = [];
+
+      parsedResponse.stacks.forEach((stack, stackIndex) => {
+        const segmentId = crypto.randomUUID();
+        
+        // Get message objects for this stack
+        const stackMessageIds = stack.message_ids || [];
+        const stackMessages = stackMessageIds.map(id => 
+          rawMessages.find(m => m.id === id)
+        ).filter(Boolean);
+
+        // Extract unique participants
+        const participants = [...new Set(stackMessages.map(m => m.author))];
+
+        // Create segment
+        segments.push({
+          id: segmentId,
+          summary: stack.summary || stack.title,
+          title: stack.title,
+          messages: stackMessages,
+          messageIds: stackMessageIds,
+          participants: participants,
+          status: 'ACTIVE'
+        });
+
+        // Create annotations for each message
+        stackMessageIds.forEach(messageId => {
+          annotations.push({
+            messageId: messageId,
+            conversationId: rawMessages.find(m => m.id === messageId)?.conversation_id,
+            attachesTo: null,
+            segmentId: segmentId,
+            role: 'GROUPED',
+            confidence: 1.0,
+            method: 'SINGLE_PROMPT',
+            reasoning: `Grouped into stack: ${stack.title}`,
+            annotatedAt: new Date()
+          });
+        });
+      });
+
+      setLlmSegments(segments);
+      setLlmAnnotations(annotations);
+
+      addDebugLog({
+        title: "Single Prompt: Complete",
+        response: `${rawMessages.length} messages → ${segments.length} stacks\n` +
+          parsedResponse.stacks.map((s, i) => `• ${s.title} (${s.message_ids?.length || 0} msgs)`).join('\n')
+      });
+
+      setMaxStep(1);
+    } catch (err) {
+      setError(err.message);
+      addDebugLog({ title: "Single Prompt Error", error: err.message });
     } finally {
       setLoading(false);
       setProgress({ current: 0, total: 0, label: "" });
@@ -3373,11 +3500,11 @@ export default function StackGrouperPOC() {
                         )}
                       </div>
                       <button
-                        onClick={handleLLMSegmentation}
+                        onClick={strategyConfig.strategy === 'single-prompt' ? handleSinglePromptSegmentation : handleLLMSegmentation}
                         disabled={loading || !apiKey || rawMessages.length === 0}
                         className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded text-sm font-medium"
                       >
-                        {loading ? "⟳ Processing..." : "Run LLM Segmentation"}
+                        {loading ? "⟳ Processing..." : (strategyConfig.strategy === 'single-prompt' ? "Run Single-Prompt" : "Run LLM Segmentation")}
                       </button>
                     </div>
                     
@@ -3396,7 +3523,7 @@ export default function StackGrouperPOC() {
                         <div className="text-center">
                           <div className="text-lg mb-2">Ready to process</div>
                           <div className="text-sm">
-                            Click "Run LLM Segmentation" to classify {rawMessages.length} messages
+                            Click "{strategyConfig.strategy === 'single-prompt' ? 'Run Single-Prompt' : 'Run LLM Segmentation'}" to classify {rawMessages.length} messages
                           </div>
                         </div>
                       </div>
