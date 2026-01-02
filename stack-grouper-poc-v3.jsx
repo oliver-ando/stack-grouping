@@ -193,14 +193,22 @@ const findSegmentContaining = (messageId, state) => {
 };
 
 /**
- * Get letter identifier for a segment (A, B, C, ...)
+ * Get short UUID identifier for a segment (first 6 chars)
  * @param {Segment} segment
- * @param {ConversationState} state
  * @returns {string}
  */
-const getSegmentLetter = (segment, state) => {
-  const index = state.activeSegments.indexOf(segment);
-  return String.fromCharCode(65 + index);
+const getSegmentShortId = (segment) => {
+  return segment?.id?.slice(0, 6) || '??????';
+};
+
+/**
+ * Find segment by short UUID prefix
+ * @param {string} shortId
+ * @param {ConversationState} state
+ * @returns {Segment|undefined}
+ */
+const findSegmentByShortId = (shortId, state) => {
+  return state.activeSegments.find(s => s.id.startsWith(shortId));
 };
 
 /**
@@ -290,21 +298,26 @@ const checkStructuralSignals = (message, state) => {
 
 const SEGMENTATION_SYSTEM_PROMPT = `You are a conversation analyst for a workplace chat platform. Your task is to determine how each new message relates to ongoing conversations in a channel.
 
-A channel can have multiple simultaneous conversations. Messages belong to the same conversation when they discuss the SAME SPECIFIC TOPIC or issue.
+A channel can have multiple simultaneous conversations. Messages belong to the same conversation when they discuss the SAME SPECIFIC ISSUE (not just the same general topic).
 
-TEMPORAL PROXIMITY IS CRITICAL:
-- Messages sent within SECONDS or MINUTES of the previous message are VERY LIKELY continuations of the same conversation
-- If the previous message was just sent (< 5 minutes ago), STRONGLY prefer attaching to that message's segment
-- Brief reactions like "lol", "nice", "W" sent immediately after another message are almost ALWAYS reactions to that message
-- Older/stale segments (last activity hours or days ago) require STRONG semantic match to attach new messages
-- When in doubt between a recent segment and an old one, prefer the RECENT one
+BE AGGRESSIVE ABOUT CREATING NEW SEGMENTS:
+- Different PRs = different segments (PR #123 ≠ PR #124)
+- Different bugs = different segments
+- Different questions = different segments  
+- A new announcement = new segment
+- When unsure, lean toward creating NEW segment
+
+TEMPORAL PROXIMITY - USE WITH CAUTION:
+- Brief reactions ("lol", "nice", "W", "+1") sent immediately after another message → same segment
+- BUT a new question or topic 30 seconds later = NEW segment (timing doesn't override content)
+- Don't merge unrelated messages just because they're close in time
 
 WHEN TO CREATE A NEW TOPIC (use "NEW"):
 - A new bug report, error, or issue being raised
 - A new PR/code review announcement  
-- A new question unrelated to existing topics
+- A new question (even if related to same general area)
 - A new feature discussion or announcement
-- Any message discussing a DIFFERENT subject than existing segments
+- Any message discussing a DIFFERENT specific issue
 - Even if in the same thread, a different issue = new topic
 
 IMPORTANT: Thread replies can contain MULTIPLE TOPICS.
@@ -317,13 +330,12 @@ RESOLUTION SIGNALS (use RESOLVES role):
 - "You can close this", "Close this out", "This is done"
 - "LGTM", "Approved", "Merged"
 - "Thanks, that worked", acknowledgement that issue is solved
-- Final confirmations or sign-offs
 
 ROLE DEFINITIONS:
 - INITIATES: Starts a new topic (new bug, new PR, new question, new feature discussion)
-- DEVELOPS: Adds information to the SAME topic (more details, elaboration, follow-up)
-- RESPONDS: Directly answers a question about the SAME topic
-- RESOLVES: Closes out a conversation (fix confirmed, PR merged, issue closed, "close this out")
+- DEVELOPS: Adds information to the SAME SPECIFIC issue (more details about THAT issue)
+- RESPONDS: Directly answers a question about the SAME SPECIFIC issue
+- RESOLVES: Closes out a conversation (fix confirmed, PR merged, issue closed)
 - REACTS: Brief reaction without substance (emoji-like responses, "nice", "lol", "W")
 
 Respond with JSON only.`;
@@ -345,12 +357,12 @@ const buildSegmentationPrompt = (message, state, recentMessages) => {
   const prevMessageSegment = prevMessage 
     ? state.activeSegments.find(s => s.messageIds.includes(prevMessage.id))
     : null;
-  const prevSegmentLetter = prevMessageSegment 
-    ? String.fromCharCode(65 + state.activeSegments.indexOf(prevMessageSegment))
+  const prevSegmentShortId = prevMessageSegment 
+    ? getSegmentShortId(prevMessageSegment)
     : null;
 
-  const conversationBlocks = state.activeSegments.map((segment, index) => {
-    const letter = String.fromCharCode(65 + index); // A, B, C...
+  const conversationBlocks = state.activeSegments.map((segment) => {
+    const shortId = getSegmentShortId(segment);
     const segmentMessages = recentMessages
       .filter(m => segment.messageIds.includes(m.id))
       .slice(-10); // last 10 messages per conversation
@@ -367,7 +379,7 @@ const buildSegmentationPrompt = (message, state, recentMessages) => {
       ? formatTimeGap(message.created_at, lastMsgInSegment.created_at)
       : 'unknown';
 
-    return `[${letter}] ${segment.summary}
+    return `[${shortId}] ${segment.summary}
     Status: ${status}
     Last activity: ${staleness} ago
     Participants: ${segment.participants.join(', ')}
@@ -380,7 +392,7 @@ ${messageLines || '    (no messages shown)'}`;
     : '(none)';
 
   const options = state.activeSegments
-    .map((s, i) => `- ${String.fromCharCode(65 + i)}: ${s.summary}`)
+    .map(s => `- ${getSegmentShortId(s)}: ${s.summary}`)
     .concat(['- NEW: Starts a new conversation/topic'])
     .join('\n');
 
@@ -415,7 +427,7 @@ which conversation this message belongs to, not just the thread structure.
   let prevMessageContext = '';
   if (prevMessage) {
     prevMessageContext = `
-IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago)${prevSegmentLetter ? ` [Segment ${prevSegmentLetter}]` : ''}:
+IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago)${prevSegmentShortId ? ` [Segment ${prevSegmentShortId}]` : ''}:
 ${prevMessage.author}: "${prevMessage.content}"
 
 `;
@@ -438,7 +450,7 @@ ${options}
 
 Respond with JSON:
 {
-  "conversation": "<letter or NEW>",
+  "conversation": "<segment_id or NEW>",
   "attachesTo": "<message_id or null>",
   "role": "INITIATES" | "DEVELOPS" | "RESPONDS" | "RESOLVES" | "REACTS",
   "confidence": <0.0-1.0>,
@@ -479,8 +491,8 @@ const buildPreviousMessagePrompt = (message, state, recentMessages, allPreviousM
     }
   }
   
-  const referenceSegmentLetter = referenceSegment 
-    ? String.fromCharCode(65 + state.activeSegments.indexOf(referenceSegment))
+  const referenceSegmentShortId = referenceSegment 
+    ? getSegmentShortId(referenceSegment)
     : null;
   
   const timeSinceRef = referenceMessage 
@@ -504,7 +516,7 @@ const buildPreviousMessagePrompt = (message, state, recentMessages, allPreviousM
       })
       .join('\n');
 
-    topicSection = `${topicLabel} [Segment ${referenceSegmentLetter}]:
+    topicSection = `${topicLabel} [Segment ${referenceSegmentShortId}]:
 Summary: ${referenceSegment.summary}
 Participants: ${referenceSegment.participants.join(', ')}
 
@@ -526,7 +538,7 @@ ${referenceMessage.author}: "${referenceMessage.content}"
   const threadGuidance = isThreadReply 
     ? `
 
-⚠️ IMPORTANT: This is a THREAD REPLY. Thread replies should ALMOST ALWAYS attach to their thread's topic (Segment ${referenceSegmentLetter || '?'}).
+⚠️ IMPORTANT: This is a THREAD REPLY. Thread replies should ALMOST ALWAYS attach to their thread's topic (Segment ${referenceSegmentShortId || '??????'}).
 Only use "NEW" if the message is discussing something COMPLETELY UNRELATED to the thread topic.
 Questions, reactions, follow-ups, tangents - these all belong to the thread's topic.
 
@@ -541,16 +553,16 @@ ${message.author}: "${message.content}"
 ---
 
 ${isThreadReply 
-  ? `This is a THREAD REPLY. Attach to the thread's topic (Segment ${referenceSegmentLetter}) unless COMPLETELY unrelated.`
+  ? `This is a THREAD REPLY. Attach to the thread's topic (Segment ${referenceSegmentShortId}) unless COMPLETELY unrelated.`
   : `Is this message about THE SAME SPECIFIC ISSUE as the previous topic?
-- Same issue = attach to Segment ${referenceSegmentLetter || '?'}
+- Same issue = attach to Segment ${referenceSegmentShortId || '??????'}
 - Different issue (new bug, new PR, new question) = NEW
 Note: Keyword overlap is NOT enough! "DMs" in two messages doesn't mean same topic.`}
 
 Respond with JSON:
 {
   "continues_previous": true | false,
-  "segment": "${referenceSegmentLetter || 'NEW'}" | "NEW",
+  "segment": "${referenceSegmentShortId || 'NEW'}" | "NEW",
   "role": "INITIATES" | "DEVELOPS" | "RESPONDS" | "RESOLVES" | "REACTS",
   "confidence": <0.0-1.0>,
   "reasoning": "<one sentence>"
@@ -569,8 +581,8 @@ const buildHybridPrompt = (message, state, recentMessages, config) => {
   const prevMessageSegment = prevMessage 
     ? state.activeSegments.find(s => s.messageIds.includes(prevMessage.id))
     : null;
-  const prevSegmentLetter = prevMessageSegment 
-    ? String.fromCharCode(65 + state.activeSegments.indexOf(prevMessageSegment))
+  const prevSegmentShortId = prevMessageSegment 
+    ? getSegmentShortId(prevMessageSegment)
     : null;
 
   const channelName = message.conversation_name || 'channel';
@@ -594,8 +606,8 @@ const buildHybridPrompt = (message, state, recentMessages, config) => {
     .slice(0, config.maxSegmentsToShow);
 
   // Build segment blocks for recent segments only
-  const conversationBlocks = recentSegments.map(({ segment, index, ageMs, lastMsg }) => {
-    const letter = String.fromCharCode(65 + index);
+  const conversationBlocks = recentSegments.map(({ segment, ageMs, lastMsg }) => {
+    const shortId = getSegmentShortId(segment);
     const ageStr = formatTimeGap(message.created_at, lastMsg?.created_at);
     const segmentMessages = recentMessages
       .filter(m => segment.messageIds.includes(m.id))
@@ -605,7 +617,7 @@ const buildHybridPrompt = (message, state, recentMessages, config) => {
       .map(m => `    ${m.author}: ${m.content}`)
       .join('\n');
 
-    return `[${letter}] ${segment.summary}
+    return `[${shortId}] ${segment.summary}
     Last activity: ${ageStr} ago
     Messages:
 ${messageLines || '    (no messages)'}`;
@@ -630,7 +642,7 @@ ${threadMessages.map(m => `  ${m.author}: "${m.content}"`).join('\n')}
   // Previous message section (emphasized in hybrid mode)
   const prevMsgSection = prevMessage && config.preferPreviousMessage
     ? `
->>> IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago) [Segment ${prevSegmentLetter || '?'}]:
+>>> IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago) [Segment ${prevSegmentShortId || '??????'}]:
 >>> ${prevMessage.author}: "${prevMessage.content}"
 >>> Messages sent close together usually belong to the same conversation!
 
@@ -638,7 +650,7 @@ ${threadMessages.map(m => `  ${m.author}: "${m.content}"`).join('\n')}
     : '';
 
   const options = recentSegments
-    .map(({ index }) => `- ${String.fromCharCode(65 + index)}`)
+    .map(({ segment }) => `- ${getSegmentShortId(segment)}`)
     .concat(['- NEW: Starts a new conversation'])
     .join('\n');
 
@@ -657,7 +669,7 @@ ${options}
 
 Respond with JSON:
 {
-  "conversation": "<letter or NEW>",
+  "conversation": "<segment_id or NEW>",
   "role": "INITIATES" | "DEVELOPS" | "RESPONDS" | "RESOLVES" | "REACTS",
   "confidence": <0.0-1.0>,
   "reasoning": "<one sentence>"
@@ -743,8 +755,8 @@ const classifyWithLLM = async (message, state, recentMessages, allPreviousMessag
     }
   }
   
-  const referenceSegmentLetter = referenceSegment 
-    ? String.fromCharCode(65 + state.activeSegments.indexOf(referenceSegment))
+  const referenceSegmentShortId = referenceSegment 
+    ? getSegmentShortId(referenceSegment)
     : null;
 
   // Build prompt based on strategy
@@ -851,12 +863,11 @@ Respond with JSON only.`;
       };
     }
 
-    // Attach to existing conversation
-    const segmentIndex = result.conversation.charCodeAt(0) - 65; // A=0, B=1, etc.
-    const segment = state.activeSegments[segmentIndex];
+    // Attach to existing conversation by UUID prefix
+    const segment = findSegmentByShortId(result.conversation, state);
 
     if (!segment) {
-      // Fallback: try to find most recent segment if letter is invalid
+      // Fallback: try to find most recent segment if segment ID is invalid
       const fallbackSegment = state.activeSegments[state.activeSegments.length - 1];
       
       if (fallbackSegment && result.role !== 'INITIATES') {
@@ -868,7 +879,7 @@ Respond with JSON only.`;
           role: result.role,
           confidence: result.confidence * 0.7,
           method: 'LLM',
-          reasoning: `${result.reasoning} (attached to most recent segment due to invalid letter ${result.conversation})`,
+          reasoning: `${result.reasoning} (attached to most recent segment due to invalid ID ${result.conversation})`,
           annotatedAt: new Date()
         };
       }
@@ -883,7 +894,7 @@ Respond with JSON only.`;
         role: result.role,
         confidence: result.confidence * 0.5,
         method: 'LLM',
-        reasoning: `${result.reasoning} (new segment: invalid letter ${result.conversation})`,
+        reasoning: `${result.reasoning} (new segment: invalid ID ${result.conversation})`,
         annotatedAt: new Date()
       };
     }
@@ -970,9 +981,8 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
       addDebugLog({
         title: `Message ${i + 1}: Structural`,
         request: `${message.author}: "${message.content?.slice(0, 50)}..."`,
-        response: `${annotation.method}: ${annotation.reasoning} → Segment ${getSegmentLetter(
-          state.activeSegments.find(s => s.id === annotation.segmentId),
-          state
+        response: `${annotation.method}: ${annotation.reasoning} → Segment ${getSegmentShortId(
+          state.activeSegments.find(s => s.id === annotation.segmentId)
         ) || 'NEW'}`
       });
     } else {
@@ -986,14 +996,13 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
       annotation = await classifyWithLLM(message, state, recentMessages, allPreviousMessages, apiKey, model, strategyConfig);
 
       // Update debug log with response
-      const segmentLetter = getSegmentLetter(
-        state.activeSegments.find(s => s.id === annotation.segmentId),
-        state
-      ) || '?';
+      const segmentShortId = getSegmentShortId(
+        state.activeSegments.find(s => s.id === annotation.segmentId)
+      ) || '??????';
 
       addDebugLog({
         title: `Message ${i + 1}: Result`,
-        response: `${annotation.role} → Segment ${segmentLetter} (${(annotation.confidence * 100).toFixed(0)}%)\n${annotation.reasoning}`
+        response: `${annotation.role} → Segment ${segmentShortId} (${(annotation.confidence * 100).toFixed(0)}%)\n${annotation.reasoning}`
       });
     }
 
@@ -1332,34 +1341,48 @@ const createUnit = (messages, index) => ({
 // API CALLS
 // ============================================
 
-const callAnthropic = async (apiKey, system, userMessage, maxTokens = 2000, model = "claude-3-5-haiku-20241022") => {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: model,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: "user", content: userMessage }],
-    }),
-  });
+const callAnthropic = async (apiKey, system, userMessage, maxTokens = 2000, model = "claude-3-5-haiku-20241022", timeoutMs = 120000) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({ error: { message: response.statusText } }));
-    throw new Error(
-      error.error?.message || `API call failed: ${response.status}`
-    );
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: "user", content: userMessage }],
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(
+        error.error?.message || `API call failed: ${response.status}`
+      );
+    }
+
+    const data = await response.json();
+    return data.content[0].text;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs / 1000} seconds`);
+    }
+    throw err;
   }
-
-  const data = await response.json();
-  return data.content[0].text;
 };
 
 // ============================================
@@ -1835,11 +1858,12 @@ const MessageBubble = ({ message, colorMap, compact = false, showGroupIndex = fa
           >
             {message.id}
           </span>
-          {showGroupIndex && message.groupIndex && (
+          {showGroupIndex && message.groupId && (
             <span
-              className={`${compact ? "text-[10px]" : "text-xs"} bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium`}
+              className={`${compact ? "text-[10px]" : "text-xs"} bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium font-mono`}
+              title={message.groupId}
             >
-              group {message.groupIndex}
+              {message.groupId?.slice(0, 6)}
             </span>
           )}
         </div>
@@ -1861,6 +1885,7 @@ const UnitCard = ({ unit, colorMap, highlight, badge }) => {
   const [expanded, setExpanded] = useState(false);
   const hasMore = unit.messages.length > 2;
   const messagesToShow = expanded ? unit.messages : unit.messages.slice(0, 2);
+  const unitShortId = unit.id?.slice(0, 6) || '??????';
 
   return (
     <div
@@ -1870,8 +1895,8 @@ const UnitCard = ({ unit, colorMap, highlight, badge }) => {
     >
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-gray-400">
-            group {unit.index + 1}
+          <span className="text-xs font-mono text-gray-400" title={unit.id}>
+            {unitShortId}
           </span>
           <span className="text-[10px] text-gray-400">
             #{unit.conversation_name}
@@ -1939,8 +1964,8 @@ const SegmentCard = ({ segment, index, colorMap, annotations }) => {
     <div className={`p-3 rounded-lg border-2 ${status.bg} ${status.border}`}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-bold text-gray-700">
-            {String.fromCharCode(65 + index)}
+          <span className="text-sm font-bold text-gray-700 font-mono">
+            {segment.id?.slice(0, 6) || '??????'}
           </span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${status.text} ${status.bg}`}>
             {segment.status}
@@ -2113,23 +2138,23 @@ const ConversationSidebar = ({
 const TimelineMessage = ({ 
   message, 
   annotation, 
+  segment,
   segmentColor, 
-  segmentIndex, 
   isThreadReply,
   colorMap 
 }) => {
   const authorColor = getAuthorColor(message.author, colorMap);
   const role = roleColors[annotation?.role] || roleColors.DEVELOPS;
-  const segmentLetter = segmentIndex >= 0 ? String.fromCharCode(65 + segmentIndex) : '?';
+  const segmentShortId = segment?.id?.slice(0, 6) || '??????';
 
   return (
     <div className={`flex gap-3 py-1.5 px-3 hover:bg-gray-50 transition-colors ${isThreadReply ? 'ml-10 border-l-2 border-gray-200' : ''}`}>
       {/* Segment indicator - per message */}
       <div 
-        className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold flex-shrink-0 ${segmentColor?.bg || 'bg-gray-100'} ${segmentColor?.text || 'text-gray-600'}`}
-        title={`Segment ${segmentLetter}`}
+        className={`w-auto min-w-[2rem] h-6 px-1 rounded flex items-center justify-center text-[10px] font-mono font-bold flex-shrink-0 ${segmentColor?.bg || 'bg-gray-100'} ${segmentColor?.text || 'text-gray-600'}`}
+        title={`Segment ${segmentShortId}`}
       >
-        {segmentLetter}
+        {segmentShortId}
       </div>
       
       {/* Avatar */}
@@ -2186,11 +2211,12 @@ const TimelineMessage = ({
   );
 };
 
-const SegmentDivider = ({ segment, segmentIndex, segmentColor }) => {
+const SegmentDivider = ({ segment, segmentColor }) => {
+  const segmentShortId = segment?.id?.slice(0, 6) || '??????';
   return (
     <div className={`flex items-center gap-3 px-4 py-2 ${segmentColor?.bg || 'bg-gray-50'} border-l-4 ${segmentColor?.border || 'border-l-gray-300'}`}>
-      <div className={`text-sm font-bold ${segmentColor?.text || 'text-gray-600'}`}>
-        Segment {String.fromCharCode(65 + segmentIndex)}
+      <div className={`text-sm font-bold font-mono ${segmentColor?.text || 'text-gray-600'}`}>
+        Segment {segmentShortId}
       </div>
       <div className="flex-1 h-px bg-current opacity-20" />
       <div className="text-xs text-gray-500">
@@ -2325,8 +2351,8 @@ const MessageTimeline = ({
                   <TimelineMessage
                     message={msgInfo.message}
                     annotation={msgInfo.annotation}
+                    segment={msgInfo.segment}
                     segmentColor={msgInfo.segmentColor}
-                    segmentIndex={msgInfo.segmentIndex}
                     isThreadReply={false}
                     colorMap={colorMap}
                   />
@@ -2341,8 +2367,8 @@ const MessageTimeline = ({
                             key={reply.id}
                             message={replyInfo.message}
                             annotation={replyInfo.annotation}
+                            segment={replyInfo.segment}
                             segmentColor={replyInfo.segmentColor}
-                            segmentIndex={replyInfo.segmentIndex}
                             isThreadReply={true}
                             colorMap={colorMap}
                           />
@@ -2367,16 +2393,16 @@ const MessageTimeline = ({
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-2">
             {conversationSegments.map((seg) => {
-              const segIndex = getSegmentIndex(seg.id);
               const color = getSegmentColor(seg.id);
+              const segmentShortId = seg.id?.slice(0, 6) || '??????';
               return (
                 <div
                   key={seg.id}
                   className={`p-2 rounded-lg border-l-4 ${color.border} ${color.bg}`}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <span className={`text-sm font-bold ${color.text}`}>
-                      {String.fromCharCode(65 + segIndex)}
+                    <span className={`text-sm font-bold font-mono ${color.text}`}>
+                      {segmentShortId}
                     </span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                       seg.status === 'RESOLVED' ? 'bg-green-100 text-green-700' :
@@ -2405,8 +2431,9 @@ const MessageTimeline = ({
 };
 
 const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
-  // Get unique group indices for this stack
-  const groupIndices = [...new Set(stack.messages.map(m => m.groupIndex).filter(Boolean))].sort((a, b) => a - b);
+  // Get unique group IDs (short UUIDs) for this stack
+  const groupIds = [...new Set(stack.messages.map(m => m.groupId).filter(Boolean))];
+  const stackShortId = stack.id?.slice(0, 6) || '??????';
   
   return (
     <div className="border rounded-lg bg-white overflow-hidden">
@@ -2416,15 +2443,15 @@ const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
       >
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-xs font-mono text-gray-400">S{index + 1}</span>
+            <span className="text-xs font-mono text-gray-400" title={stack.id}>{stackShortId}</span>
             <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
               {stack.messages.length} msgs
             </span>
-            {groupIndices.length > 0 && (
-              <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
-                {groupIndices.length === 1 
-                  ? `group ${groupIndices[0]}` 
-                  : `groups ${groupIndices.join(', ')}`}
+            {groupIds.length > 0 && (
+              <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-mono">
+                {groupIds.length === 1 
+                  ? groupIds[0]?.slice(0, 6) 
+                  : `${groupIds.length} groups`}
               </span>
             )}
           </div>
@@ -2646,8 +2673,8 @@ const CONVERSATION_NAME_MAP = {
 // Available models
 const AVAILABLE_MODELS = [
   { id: 'claude-3-5-haiku-20241022', name: 'Haiku 3.5', description: 'Fast & cheap' },
-  { id: 'claude-sonnet-4-20250514', name: 'Sonnet 4', description: 'Balanced' },
-  { id: 'claude-opus-4-20250514', name: 'Opus 4', description: 'Most capable' },
+  { id: 'claude-3-5-sonnet-20241022', name: 'Sonnet 3.5', description: 'Balanced' },
+  { id: 'claude-3-opus-20240229', name: 'Opus 3', description: 'Most capable' },
 ];
 
 export default function StackGrouperPOC() {
@@ -2899,9 +2926,45 @@ export default function StackGrouperPOC() {
     setLlmSegments([]);
     setLlmAnnotations([]);
 
-    const systemPrompt = `You are given a list of messages from an Ando workspace in JSON format. Each message is an event with text content and metadata (such as timestamp, author, channel, thread id, or any other fields provided). Your task is to group these messages into semantically related groups called "stacks." Each stack represents a coherent topic, task, project, question, or cluster of messages that belong together. Stacks are similar to conversation clusters or topic threads. Produce **all stacks** in your output. Do not return a sample, subset, or partial result. For each stack, produce a title and a summary and list the messages that belong to that stack. The title should be short and descriptive. The summary should explain why the messages were grouped together and what the cluster is about. Use clear language that would be understandable to a human. Do not omit any message. Every message in the input must be included in exactly one stack. Output the result in valid JSON with the following structure: { "stacks": [ { "title": string, "summary": string, "message_ids": [ list of identifiers referencing each message in this group ], "messages": [ full message objects for each message in this group ] }, ... ] } Here are additional rules and instructions: Make sure each stack meets these criteria: 1. **Semantic coherence**: Messages in the same stack must be related by topic, goal, task, or intent. Use the content and context to determine relationships. 2. **Minimal overlap**: A message belongs in only one stack. Do not duplicate a message across stacks. 3. **Distinct topics**: Stacks should represent distinct subjects or threads of work. If messages are different tasks or topics, they should be in different stacks. 4. **Human readable**: Titles and summaries should be clear and concise. A reader should understand what the stack is about without reading all the messages. 5. **Complete coverage**: Include every message in the input. Do not drop or ignore messages. Follow this structure exactly. Validate your JSON output and ensure it is well formed. Use the field id or a similar unique identifier to reference each message in the output. Begin by analyzing the messages, detecting topics and semantic links. Then produce the JSON output with all stacks including their title, summary, message_ids, and messages.`;
+    const systemPrompt = `You are given a list of messages from an Ando workspace in JSON format. Each message is an event with text content and metadata (such as timestamp, author, channel, thread id, or any other fields provided). Your task is to group these messages into semantically related groups called "stacks." Each stack represents a SPECIFIC topic, task, question, or issue being discussed.
+
+CRITICAL: Output ONLY valid JSON. No markdown code blocks, no explanatory text, no \`\`\` markers. Start your response with { and end with }.
+
+GRANULARITY IS KEY - PREFER SMALLER, FOCUSED STACKS:
+- Each stack should be about ONE SPECIFIC ISSUE, not a broad category
+- A stack like "General Development Discussion" is TOO BROAD - break it into specific issues
+- "PR #423 Review" is a good stack. "Code Reviews" is too broad.
+- "Fixing inbox loading error" is a good stack. "Bug fixes" is too broad.
+- Different PRs = different stacks. Different bugs = different stacks.
+- Questions and their answers can be one stack, but a new question = new stack
+- Expect roughly 1 stack per 3-8 messages on average (a channel with 100 messages might have 15-40 stacks)
+- Brief reactions/acknowledgments ("nice", "thanks", "lol") belong with the message they're reacting to
+
+WHEN TO SPLIT INTO SEPARATE STACKS:
+- Different PRs, issues, or bugs being discussed
+- Different questions being asked
+- Different announcements or updates
+- Unrelated tangents that emerge in conversation
+- Messages separated by significant time gaps discussing different things
+
+Output structure:
+{ "stacks": [ { "title": string, "summary": string, "message_ids": [ list of message id values ] }, ... ] }
+
+NOTE: Do NOT include the full "messages" array - only include "message_ids" to keep the response compact.
+
+Rules:
+1. Semantic coherence: Messages in the same stack must be about the SAME SPECIFIC issue/topic.
+2. Granular stacks: Prefer many small focused stacks over few large broad ones.
+3. Minimal overlap: A message belongs in only one stack. Do not duplicate.
+4. Distinct topics: Different tasks/issues/PRs/questions = different stacks.
+5. Human readable: Titles should be specific and descriptive (not generic categories).
+6. Complete coverage: Include every message in the input. Do not drop any.
+
+Use the field "id" to reference each message in message_ids.`;
 
     try {
+      console.log('[Single Prompt] Starting with', rawMessages.length, 'messages');
+      
       addDebugLog({
         title: "Single Prompt: Sending request",
         system: systemPrompt.slice(0, 500) + "...",
@@ -2914,29 +2977,48 @@ export default function StackGrouperPOC() {
       // Format messages as JSON for the prompt
       const messagesJson = JSON.stringify(rawMessages, null, 2);
       const userMessage = `Here are the messages to group into stacks:\n\n${messagesJson}`;
+      
+      console.log('[Single Prompt] User message length:', userMessage.length, 'chars');
 
       // Calculate max tokens based on message count (rough estimate: ~100 tokens per message for response)
       const estimatedMaxTokens = Math.min(Math.max(4000, rawMessages.length * 150), 64000);
 
+      console.log('[Single Prompt] Calling API with max tokens:', estimatedMaxTokens);
+      
+      // Use longer timeout for single-prompt (5 minutes) since it processes all messages at once
       const response = await callAnthropic(
         apiKey,
         systemPrompt,
         userMessage,
         estimatedMaxTokens,
-        selectedModel
+        selectedModel,
+        300000 // 5 minute timeout
       );
 
+      console.log('[Single Prompt] Got response, length:', response?.length, 'chars');
       setProgress({ current: 2, total: 2, label: "Parsing response..." });
 
       // Parse the response JSON
       let parsedResponse;
       try {
-        // Try to extract JSON from the response (in case there's extra text)
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsedResponse = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error("No JSON found in response");
+        // First, strip markdown code blocks if present (```json ... ``` or ``` ... ```)
+        let cleanedResponse = response;
+        const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (codeBlockMatch) {
+          cleanedResponse = codeBlockMatch[1].trim();
+        }
+        
+        // Try to parse the cleaned response directly first
+        try {
+          parsedResponse = JSON.parse(cleanedResponse);
+        } catch {
+          // If that fails, try to extract JSON object from the text
+          const jsonMatch = cleanedResponse.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsedResponse = JSON.parse(jsonMatch[0]);
+          } else {
+            throw new Error("No JSON found in response");
+          }
         }
       } catch (parseErr) {
         throw new Error(`Failed to parse LLM response: ${parseErr.message}\n\nResponse: ${response.slice(0, 500)}...`);
@@ -3006,6 +3088,33 @@ export default function StackGrouperPOC() {
       setLoading(false);
       setProgress({ current: 0, total: 0, label: "" });
     }
+  };
+
+  // Convert LLM segments directly to stacks (skip Step 2 for LLM flow)
+  const handleLLMSegmentsToStacks = () => {
+    if (llmSegments.length === 0) {
+      setError("No segments to process");
+      return;
+    }
+
+    // Convert segments directly to stacks - each segment becomes a stack
+    const newStacks = llmSegments.map((segment) => ({
+      id: segment.id,
+      title: segment.summary?.slice(0, 50) || 'Untitled',
+      summary: segment.summary || '',
+      messages: segment.messages.map(m => ({ ...m, groupId: segment.id })),
+    }));
+
+    setStacks(newStacks);
+    setValidatedUnits([]); // Clear since we're skipping Step 2
+    
+    addDebugLog({
+      title: "LLM Segments → Stacks",
+      response: `${llmSegments.length} segments converted directly to stacks (skipped Step 2)`
+    });
+
+    setMaxStep(3);
+    setCurrentStep(3);
   };
 
   // Step 1 → 2 (BATCHED WITH OVERLAP)
@@ -3252,8 +3361,8 @@ export default function StackGrouperPOC() {
 
         const logEntry = { unitIndex: i, unit, decision };
 
-        // Tag messages with their source group index
-        const taggedMessages = unit.messages.map(m => ({ ...m, groupIndex: i + 1 }));
+        // Tag messages with their source group ID (UUID)
+        const taggedMessages = unit.messages.map(m => ({ ...m, groupId: unit.id }));
 
         if (
           decision.action === "join" &&
@@ -3499,13 +3608,23 @@ export default function StackGrouperPOC() {
                           </div>
                         )}
                       </div>
-                      <button
-                        onClick={strategyConfig.strategy === 'single-prompt' ? handleSinglePromptSegmentation : handleLLMSegmentation}
-                        disabled={loading || !apiKey || rawMessages.length === 0}
-                        className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded text-sm font-medium"
-                      >
-                        {loading ? "⟳ Processing..." : (strategyConfig.strategy === 'single-prompt' ? "Run Single-Prompt" : "Run LLM Segmentation")}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={strategyConfig.strategy === 'single-prompt' ? handleSinglePromptSegmentation : handleLLMSegmentation}
+                          disabled={loading || !apiKey || rawMessages.length === 0}
+                          className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded text-sm font-medium"
+                        >
+                          {loading ? "⟳ Processing..." : (strategyConfig.strategy === 'single-prompt' ? "Run Single-Prompt" : "Run LLM Segmentation")}
+                        </button>
+                        {llmSegments.length > 0 && !loading && (
+                          <button
+                            onClick={handleLLMSegmentsToStacks}
+                            className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded text-sm font-medium"
+                          >
+                            Create Stacks → Step 3
+                          </button>
+                        )}
+                      </div>
                     </div>
                     
                     {/* Strategy Configuration Panel */}
@@ -3611,7 +3730,7 @@ export default function StackGrouperPOC() {
                                 : "bg-blue-50 text-blue-700"
                             }`}
                           >
-                            group {item.unit}: {item.action}{" "}
+                            <span className="font-mono">{typeof item.unit === 'string' ? item.unit.slice(0, 6) : item.unit}</span>: {item.action}{" "}
                             {item.reason && `- ${item.reason}`}
                           </div>
                         ))}
@@ -3679,8 +3798,8 @@ export default function StackGrouperPOC() {
                       }`}
                     >
                       <div className="flex justify-between mb-1">
-                        <span className="font-medium">
-                          group {entry.unitIndex + 1}
+                        <span className="font-medium font-mono" title={entry.unit?.id}>
+                          {entry.unit?.id?.slice(0, 6) || '??????'}
                         </span>
                         <span
                           className={
