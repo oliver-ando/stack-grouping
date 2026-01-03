@@ -42,22 +42,22 @@ const formatShortTime = (isoString) => {
  */
 const formatTimeGap = (laterTime, earlierTime) => {
   if (!laterTime || !earlierTime) return "unknown";
-  
+
   const later = new Date(laterTime);
   const earlier = new Date(earlierTime);
   const diffMs = later - earlier;
-  
+
   if (diffMs < 0) return "before";
-  
+
   const seconds = Math.floor(diffMs / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  
-  if (days > 0) return `${days} day${days > 1 ? 's' : ''}`;
-  if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''}`;
-  if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''}`;
-  return `${seconds} second${seconds !== 1 ? 's' : ''}`;
+
+  if (days > 0) return `${days} day${days > 1 ? "s" : ""}`;
+  if (hours > 0) return `${hours} hour${hours > 1 ? "s" : ""}`;
+  if (minutes > 0) return `${minutes} minute${minutes > 1 ? "s" : ""}`;
+  return `${seconds} second${seconds !== 1 ? "s" : ""}`;
 };
 
 /**
@@ -66,9 +66,9 @@ const formatTimeGap = (laterTime, earlierTime) => {
  */
 const formatMessageContent = (content) => {
   if (!content) return "";
-  
+
   // Replace <!member_group:uuid|name> with @name
-  return content.replace(/<!member_group:[^|]+\|([^>]+)>/g, '@$1');
+  return content.replace(/<!member_group:[^|]+\|([^>]+)>/g, "@$1");
 };
 
 // Robust JSON parsing
@@ -111,8 +111,104 @@ const parseJSONSafe = (text) => {
 };
 
 // ============================================
+// SPEECH ACT CLASSIFICATION SCHEMA
+// ============================================
+
+/**
+ * Speech act taxonomy for message classification
+ * Based on dialogue act classes for team communication
+ */
+const SPEECH_ACT_SCHEMA = {
+  Query: [
+    "Query-Status",
+    "Query-Status-Personal",
+    "Query-Status-Environment",
+    "Query-Status-TaskOrIssue",
+    "Query-Technical",
+    "Query-Admin",
+    "Query-Through-Uncertainty",
+    "Query-For-Clarification",
+  ],
+  Assign: ["Assign-Task", "Assign-Admin"],
+  Request: ["Request", "Request-Help", "Request-Attention"],
+  Inform: [
+    "Inform-Status-Personal",
+    "Inform-Status-Environment",
+    "Inform-Status-TaskOrIssue",
+    "Inform-Status-TaskOrIssue-Progress",
+    "Inform-Status-TaskOrIssue-Impediment",
+    "Inform-NewIssue",
+    "Inform-NewIssue-Anticipated",
+    "Inform-Technical",
+    "Inform-Admin",
+    "Inform-InResponse",
+    "Inform-ExplainRationale",
+    "Inform-ClaimTask",
+    "Inform-ClaimProblemResponsibility",
+  ],
+  Propose: [
+    "Propose-Task",
+    "Propose-PossibleSolution",
+    "Propose-OfferAssistance",
+    "Propose-Admin",
+  ],
+  Acknowledge: [
+    "Acknowledge-Receipt",
+    "Acknowledge-Accept",
+    "Acknowledge-Affirm",
+    "Acknowledge-Validated",
+  ],
+  Reject: [
+    "Reject",
+    "Reject-Counter-Assign",
+    "Reject-Counter-Inform",
+    "Reject-Counter-Claim",
+    "Reject-Counter-Propose",
+  ],
+  Code: ["Code-Message-Table-Issue", "Code-Message-Table-Solution"],
+  Social: [
+    "Social-Blame-Person",
+    "Social-Backchannel",
+    "Social-Comradery",
+    "Social-Appreciation",
+    "Social-Frustration",
+  ],
+};
+
+// Color mapping for speech act categories
+const speechActColors = {
+  Query: { bg: "bg-blue-100", text: "text-blue-700", dot: "bg-blue-500" },
+  Assign: {
+    bg: "bg-orange-100",
+    text: "text-orange-700",
+    dot: "bg-orange-500",
+  },
+  Request: {
+    bg: "bg-yellow-100",
+    text: "text-yellow-700",
+    dot: "bg-yellow-600",
+  },
+  Inform: { bg: "bg-green-100", text: "text-green-700", dot: "bg-green-500" },
+  Propose: {
+    bg: "bg-purple-100",
+    text: "text-purple-700",
+    dot: "bg-purple-500",
+  },
+  Acknowledge: { bg: "bg-teal-100", text: "text-teal-700", dot: "bg-teal-500" },
+  Reject: { bg: "bg-red-100", text: "text-red-700", dot: "bg-red-500" },
+  Code: { bg: "bg-gray-100", text: "text-gray-700", dot: "bg-gray-500" },
+  Social: { bg: "bg-pink-100", text: "text-pink-700", dot: "bg-pink-500" },
+};
+
+// ============================================
 // LLM SEGMENTATION: DATA STRUCTURES
 // ============================================
+
+/**
+ * @typedef {Object} SpeechAct
+ * @property {string} top_level - Top-level category (Query, Inform, Assign, Request, Propose, Acknowledge, Reject, Social, Code)
+ * @property {string} specific - Specific act within the category
+ */
 
 /**
  * @typedef {Object} MessageAnnotation
@@ -124,6 +220,7 @@ const parseJSONSafe = (text) => {
  * @property {number} confidence
  * @property {'STRUCTURAL'|'LLM'} method
  * @property {string} reasoning
+ * @property {SpeechAct|null} speechAct - Speech act classification
  * @property {Date} annotatedAt
  */
 
@@ -158,13 +255,13 @@ const createSegment = (message, state) => {
     id: generateUUID(),
     conversationId: message.conversation_id,
     messageIds: [message.id],
-    status: 'OPEN',
+    status: "OPEN",
     summary: generateSegmentSummary(message),
     participants: [message.author],
     createdAt: new Date(),
     lastActivityAt: new Date(),
     messages: [message],
-    annotations: []
+    annotations: [],
   };
   state.activeSegments.push(segment);
   return segment;
@@ -177,7 +274,7 @@ const createSegment = (message, state) => {
  */
 const generateSegmentSummary = (message) => {
   // Format content first to replace mentions, then truncate
-  const formatted = formatMessageContent(message.content || '');
+  const formatted = formatMessageContent(message.content || "");
   const text = formatted.slice(0, 50);
   return text.length < formatted.length ? `${text}...` : text;
 };
@@ -189,7 +286,7 @@ const generateSegmentSummary = (message) => {
  * @returns {Segment|undefined}
  */
 const findSegmentContaining = (messageId, state) => {
-  return state.activeSegments.find(s => s.messageIds.includes(messageId));
+  return state.activeSegments.find((s) => s.messageIds.includes(messageId));
 };
 
 /**
@@ -198,7 +295,7 @@ const findSegmentContaining = (messageId, state) => {
  * @returns {string}
  */
 const getSegmentShortId = (segment) => {
-  return segment?.id?.slice(0, 6) || '??????';
+  return segment?.id?.slice(0, 6) || "??????";
 };
 
 /**
@@ -208,7 +305,7 @@ const getSegmentShortId = (segment) => {
  * @returns {Segment|undefined}
  */
 const findSegmentByShortId = (shortId, state) => {
-  return state.activeSegments.find(s => s.id.startsWith(shortId));
+  return state.activeSegments.find((s) => s.id.startsWith(shortId));
 };
 
 /**
@@ -218,7 +315,9 @@ const findSegmentByShortId = (shortId, state) => {
  * @param {ConversationState} state
  */
 const updateSegmentState = (message, annotation, state) => {
-  const segment = state.activeSegments.find(s => s.id === annotation.segmentId);
+  const segment = state.activeSegments.find(
+    (s) => s.id === annotation.segmentId
+  );
   if (!segment) return;
 
   // Add message to segment if not already there
@@ -226,7 +325,7 @@ const updateSegmentState = (message, annotation, state) => {
     segment.messageIds.push(message.id);
     segment.messages.push(message);
   }
-  
+
   segment.lastActivityAt = new Date();
   segment.annotations.push(annotation);
 
@@ -236,8 +335,8 @@ const updateSegmentState = (message, annotation, state) => {
   }
 
   // Update status based on role
-  if (annotation.role === 'RESOLVES') {
-    segment.status = 'RESOLVED';
+  if (annotation.role === "RESOLVES") {
+    segment.status = "RESOLVED";
   }
 };
 
@@ -253,8 +352,8 @@ const updateSegmentState = (message, annotation, state) => {
  * @returns {Segment|undefined}
  */
 const findSegmentByThreadId = (threadId, state) => {
-  return state.activeSegments.find(s => 
-    s.messages.some(m => m.thread_id === threadId || m.id === threadId)
+  return state.activeSegments.find((s) =>
+    s.messages.some((m) => m.thread_id === threadId || m.id === threadId)
   );
 };
 
@@ -275,17 +374,18 @@ const checkStructuralSignals = (message, state) => {
   if (message.isReaction && message.reactedToId) {
     const segment = findSegmentContaining(message.reactedToId, state);
     const segmentId = segment?.id ?? createSegment(message, state).id;
-    
+
     return {
       messageId: message.id,
       conversationId: message.conversation_id,
       attachesTo: message.reactedToId,
       segmentId: segmentId,
-      role: 'REACTS',
+      role: "REACTS",
       confidence: 1.0,
-      method: 'STRUCTURAL',
-      reasoning: 'Emoji reaction',
-      annotatedAt: new Date()
+      method: "STRUCTURAL",
+      reasoning: "Emoji reaction",
+      speechAct: { top_level: "Social", specific: "Social-Appreciation" },
+      annotatedAt: new Date(),
     };
   }
 
@@ -349,67 +449,73 @@ Respond with JSON only.`;
  */
 const buildSegmentationPrompt = (message, state, recentMessages) => {
   // Find the immediately previous message for temporal context
-  const messageIndex = recentMessages.findIndex(m => m.id === message.id);
-  const prevMessage = messageIndex > 0 ? recentMessages[messageIndex - 1] : null;
-  const timeSincePrev = prevMessage ? formatTimeGap(message.created_at, prevMessage.created_at) : null;
-  
-  // Find which segment the previous message belongs to
-  const prevMessageSegment = prevMessage 
-    ? state.activeSegments.find(s => s.messageIds.includes(prevMessage.id))
+  const messageIndex = recentMessages.findIndex((m) => m.id === message.id);
+  const prevMessage =
+    messageIndex > 0 ? recentMessages[messageIndex - 1] : null;
+  const timeSincePrev = prevMessage
+    ? formatTimeGap(message.created_at, prevMessage.created_at)
     : null;
-  const prevSegmentShortId = prevMessageSegment 
+
+  // Find which segment the previous message belongs to
+  const prevMessageSegment = prevMessage
+    ? state.activeSegments.find((s) => s.messageIds.includes(prevMessage.id))
+    : null;
+  const prevSegmentShortId = prevMessageSegment
     ? getSegmentShortId(prevMessageSegment)
     : null;
 
-  const conversationBlocks = state.activeSegments.map((segment) => {
-    const shortId = getSegmentShortId(segment);
-    const segmentMessages = recentMessages
-      .filter(m => segment.messageIds.includes(m.id))
-      .slice(-10); // last 10 messages per conversation
+  const conversationBlocks = state.activeSegments
+    .map((segment) => {
+      const shortId = getSegmentShortId(segment);
+      const segmentMessages = recentMessages
+        .filter((m) => segment.messageIds.includes(m.id))
+        .slice(-10); // last 10 messages per conversation
 
-    const messageLines = segmentMessages
-      .map(m => `    [${m.id.slice(0, 8)}] ${m.author}: ${m.content}`)
-      .join('\n');
+      const messageLines = segmentMessages
+        .map((m) => `    [${m.id.slice(0, 8)}] ${m.author}: ${m.content}`)
+        .join("\n");
 
-    const status = segment.status === 'RESOLVED' ? 'RESOLVED' : 'OPEN';
-    
-    // Calculate staleness - time since last message in this segment
-    const lastMsgInSegment = segmentMessages[segmentMessages.length - 1];
-    const staleness = lastMsgInSegment 
-      ? formatTimeGap(message.created_at, lastMsgInSegment.created_at)
-      : 'unknown';
+      const status = segment.status === "RESOLVED" ? "RESOLVED" : "OPEN";
 
-    return `[${shortId}] ${segment.summary}
+      // Calculate staleness - time since last message in this segment
+      const lastMsgInSegment = segmentMessages[segmentMessages.length - 1];
+      const staleness = lastMsgInSegment
+        ? formatTimeGap(message.created_at, lastMsgInSegment.created_at)
+        : "unknown";
+
+      return `[${shortId}] ${segment.summary}
     Status: ${status}
     Last activity: ${staleness} ago
-    Participants: ${segment.participants.join(', ')}
+    Participants: ${segment.participants.join(", ")}
     Messages:
-${messageLines || '    (no messages shown)'}`;
-  }).join('\n\n');
+${messageLines || "    (no messages shown)"}`;
+    })
+    .join("\n\n");
 
-  const conversationsSection = state.activeSegments.length > 0
-    ? conversationBlocks
-    : '(none)';
+  const conversationsSection =
+    state.activeSegments.length > 0 ? conversationBlocks : "(none)";
 
   const options = state.activeSegments
-    .map(s => `- ${getSegmentShortId(s)}: ${s.summary}`)
-    .concat(['- NEW: Starts a new conversation/topic'])
-    .join('\n');
+    .map((s) => `- ${getSegmentShortId(s)}: ${s.summary}`)
+    .concat(["- NEW: Starts a new conversation/topic"])
+    .join("\n");
 
-  const channelName = message.conversation_name || 'channel';
+  const channelName = message.conversation_name || "channel";
 
   // Build thread context if this is a thread reply
-  let threadContext = '';
+  let threadContext = "";
   if (message.thread_id) {
     const threadMessages = recentMessages
-      .filter(m => m.thread_id === message.thread_id || m.id === message.thread_id)
+      .filter(
+        (m) => m.thread_id === message.thread_id || m.id === message.thread_id
+      )
       .slice(-8); // Show last 8 messages from the thread
 
     if (threadMessages.length > 0) {
       const threadLines = threadMessages
-        .map(m => `    ${m.author}: ${m.content}`)
-        .join('\n');
-      
+        .map((m) => `    ${m.author}: ${m.content}`)
+        .join("\n");
+
       threadContext = `
 THREAD CONTEXT (this message is a reply in a thread):
 ${threadLines}
@@ -424,10 +530,12 @@ which conversation this message belongs to, not just the thread structure.
   }
 
   // Build previous message context for temporal proximity
-  let prevMessageContext = '';
+  let prevMessageContext = "";
   if (prevMessage) {
     prevMessageContext = `
-IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago)${prevSegmentShortId ? ` [Segment ${prevSegmentShortId}]` : ''}:
+IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago)${
+      prevSegmentShortId ? ` [Segment ${prevSegmentShortId}]` : ""
+    }:
 ${prevMessage.author}: "${prevMessage.content}"
 
 `;
@@ -439,7 +547,9 @@ ${conversationsSection}
 
 ---
 ${threadContext}${prevMessageContext}NEW MESSAGE TO CLASSIFY:
-[${message.id.slice(0, 8)}] ${message.author}: ${message.content}${message.thread_id ? ' (thread reply)' : ''}
+[${message.id.slice(0, 8)}] ${message.author}: ${message.content}${
+    message.thread_id ? " (thread reply)" : ""
+  }
 
 ---
 
@@ -463,62 +573,77 @@ Respond with JSON:
  * For thread replies: compare to the thread's topic
  * For non-thread messages: compare to the chronologically previous topic
  */
-const buildPreviousMessagePrompt = (message, state, recentMessages, allPreviousMessages, config) => {
-  const channelName = message.conversation_name || 'channel';
-  
+const buildPreviousMessagePrompt = (
+  message,
+  state,
+  recentMessages,
+  allPreviousMessages,
+  config
+) => {
+  const channelName = message.conversation_name || "channel";
+
   // Determine the "reference topic" based on whether this is a thread reply
   let referenceSegment = null;
   let referenceMessage = null;
   let isThreadReply = false;
-  
+
   if (message.thread_id) {
     // This is a THREAD REPLY - find the thread root in ALL previous messages
     isThreadReply = true;
-    const threadRoot = allPreviousMessages.find(m => m.id === message.thread_id);
-    
+    const threadRoot = allPreviousMessages.find(
+      (m) => m.id === message.thread_id
+    );
+
     if (threadRoot) {
       referenceMessage = threadRoot;
-      referenceSegment = state.activeSegments.find(s => s.messageIds.includes(threadRoot.id));
+      referenceSegment = state.activeSegments.find((s) =>
+        s.messageIds.includes(threadRoot.id)
+      );
     }
   }
-  
+
   // If not a thread reply, or thread root not found, use chronologically previous message
   if (!referenceSegment) {
-    const prevMessage = recentMessages.length > 0 ? recentMessages[recentMessages.length - 1] : null;
+    const prevMessage =
+      recentMessages.length > 0
+        ? recentMessages[recentMessages.length - 1]
+        : null;
     if (prevMessage) {
       referenceMessage = prevMessage;
-      referenceSegment = state.activeSegments.find(s => s.messageIds.includes(prevMessage.id));
+      referenceSegment = state.activeSegments.find((s) =>
+        s.messageIds.includes(prevMessage.id)
+      );
     }
   }
-  
-  const referenceSegmentShortId = referenceSegment 
+
+  const referenceSegmentShortId = referenceSegment
     ? getSegmentShortId(referenceSegment)
     : null;
-  
-  const timeSinceRef = referenceMessage 
-    ? formatTimeGap(message.created_at, referenceMessage.created_at) 
+
+  const timeSinceRef = referenceMessage
+    ? formatTimeGap(message.created_at, referenceMessage.created_at)
     : null;
 
   // Build the topic section
-  let topicSection = '';
-  const topicLabel = isThreadReply ? 'THREAD TOPIC' : 'PREVIOUS TOPIC';
-  
+  let topicSection = "";
+  const topicLabel = isThreadReply ? "THREAD TOPIC" : "PREVIOUS TOPIC";
+
   if (referenceSegment) {
     // Get all messages from this segment for full context
     const segmentMessages = recentMessages
-      .filter(m => referenceSegment.messageIds.includes(m.id))
+      .filter((m) => referenceSegment.messageIds.includes(m.id))
       .slice(-15); // Last 15 messages from this topic
-    
+
     const messageHistory = segmentMessages
-      .map(m => {
+      .map((m) => {
         const timeAgo = formatTimeGap(message.created_at, m.created_at);
         return `  [${timeAgo} ago] ${m.author}: "${m.content}"`;
       })
-      .join('\n');
+      .join("\n");
 
     topicSection = `${topicLabel} [Segment ${referenceSegmentShortId}]:
 Summary: ${referenceSegment.summary}
-Participants: ${referenceSegment.participants.join(', ')}
+Participants: ${referenceSegment.participants.join(", ")}
 
 Message History:
 ${messageHistory}
@@ -531,19 +656,21 @@ ${referenceMessage.author}: "${referenceMessage.content}"
 
 `;
   } else {
-    topicSection = 'No previous messages (this is the first message).\n\n';
+    topicSection = "No previous messages (this is the first message).\n\n";
   }
-  
+
   // For thread replies, provide strong guidance to stay with the thread's topic
-  const threadGuidance = isThreadReply 
+  const threadGuidance = isThreadReply
     ? `
 
-⚠️ IMPORTANT: This is a THREAD REPLY. Thread replies should ALMOST ALWAYS attach to their thread's topic (Segment ${referenceSegmentShortId || '??????'}).
+⚠️ IMPORTANT: This is a THREAD REPLY. Thread replies should ALMOST ALWAYS attach to their thread's topic (Segment ${
+        referenceSegmentShortId || "??????"
+      }).
 Only use "NEW" if the message is discussing something COMPLETELY UNRELATED to the thread topic.
 Questions, reactions, follow-ups, tangents - these all belong to the thread's topic.
 
-` 
-    : '';
+`
+    : "";
 
   return `#${channelName}
 
@@ -552,18 +679,20 @@ ${message.author}: "${message.content}"
 
 ---
 
-${isThreadReply 
-  ? `This is a THREAD REPLY. Attach to the thread's topic (Segment ${referenceSegmentShortId}) unless COMPLETELY unrelated.`
-  : `Is this message about THE SAME SPECIFIC ISSUE as the previous topic?
-- Same issue = attach to Segment ${referenceSegmentShortId || '??????'}
+${
+  isThreadReply
+    ? `This is a THREAD REPLY. Attach to the thread's topic (Segment ${referenceSegmentShortId}) unless COMPLETELY unrelated.`
+    : `Is this message about THE SAME SPECIFIC ISSUE as the previous topic?
+- Same issue = attach to Segment ${referenceSegmentShortId || "??????"}
 - Different issue (new bug, new PR, new question) = NEW
-Note: Keyword overlap is NOT enough! "DMs" in two messages doesn't mean same topic.`}
+Note: Keyword overlap is NOT enough! "DMs" in two messages doesn't mean same topic.`
+}
 
 Respond with JSON:
 {
   "continues_previous": true | false,
-  "segment": "${referenceSegmentShortId || 'NEW'}" | "NEW",
-  "role": "INITIATES" | "DEVELOPS" | "RESPONDS" | "RESOLVES" | "REACTS",
+  "segment": "${referenceSegmentShortId || "NEW"}" | "NEW",
+  "speech_act": "<specific dialogue act label from the taxonomy>",
   "confidence": <0.0-1.0>,
   "reasoning": "<one sentence>"
 }`;
@@ -574,89 +703,101 @@ Respond with JSON:
  * Combines previous message focus with recent segments
  */
 const buildHybridPrompt = (message, state, recentMessages, config) => {
-  const messageIndex = recentMessages.findIndex(m => m.id === message.id);
-  const prevMessage = messageIndex > 0 ? recentMessages[messageIndex - 1] : null;
-  const timeSincePrev = prevMessage ? formatTimeGap(message.created_at, prevMessage.created_at) : null;
-  
-  const prevMessageSegment = prevMessage 
-    ? state.activeSegments.find(s => s.messageIds.includes(prevMessage.id))
+  const messageIndex = recentMessages.findIndex((m) => m.id === message.id);
+  const prevMessage =
+    messageIndex > 0 ? recentMessages[messageIndex - 1] : null;
+  const timeSincePrev = prevMessage
+    ? formatTimeGap(message.created_at, prevMessage.created_at)
     : null;
-  const prevSegmentShortId = prevMessageSegment 
+
+  const prevMessageSegment = prevMessage
+    ? state.activeSegments.find((s) => s.messageIds.includes(prevMessage.id))
+    : null;
+  const prevSegmentShortId = prevMessageSegment
     ? getSegmentShortId(prevMessageSegment)
     : null;
 
-  const channelName = message.conversation_name || 'channel';
-  
+  const channelName = message.conversation_name || "channel";
+
   // Filter segments by staleness and limit
   const currentTime = new Date(message.created_at);
   const stalenessMs = config.stalenessThreshold * 60 * 1000;
-  
+
   const recentSegments = state.activeSegments
     .map((segment, index) => {
-      const segmentMessages = recentMessages.filter(m => segment.messageIds.includes(m.id));
+      const segmentMessages = recentMessages.filter((m) =>
+        segment.messageIds.includes(m.id)
+      );
       const lastMsg = segmentMessages[segmentMessages.length - 1];
       const lastMsgTime = lastMsg ? new Date(lastMsg.created_at) : null;
       const ageMs = lastMsgTime ? currentTime - lastMsgTime : Infinity;
       const isStale = ageMs > stalenessMs;
-      
+
       return { segment, index, ageMs, isStale, lastMsg };
     })
-    .filter(s => !s.isStale || s.segment.id === prevMessageSegment?.id)
+    .filter((s) => !s.isStale || s.segment.id === prevMessageSegment?.id)
     .sort((a, b) => a.ageMs - b.ageMs)
     .slice(0, config.maxSegmentsToShow);
 
   // Build segment blocks for recent segments only
-  const conversationBlocks = recentSegments.map(({ segment, ageMs, lastMsg }) => {
-    const shortId = getSegmentShortId(segment);
-    const ageStr = formatTimeGap(message.created_at, lastMsg?.created_at);
-    const segmentMessages = recentMessages
-      .filter(m => segment.messageIds.includes(m.id))
-      .slice(-5);
-    
-    const messageLines = segmentMessages
-      .map(m => `    ${m.author}: ${m.content}`)
-      .join('\n');
+  const conversationBlocks = recentSegments
+    .map(({ segment, ageMs, lastMsg }) => {
+      const shortId = getSegmentShortId(segment);
+      const ageStr = formatTimeGap(message.created_at, lastMsg?.created_at);
+      const segmentMessages = recentMessages
+        .filter((m) => segment.messageIds.includes(m.id))
+        .slice(-5);
 
-    return `[${shortId}] ${segment.summary}
+      const messageLines = segmentMessages
+        .map((m) => `    ${m.author}: ${m.content}`)
+        .join("\n");
+
+      return `[${shortId}] ${segment.summary}
     Last activity: ${ageStr} ago
     Messages:
-${messageLines || '    (no messages)'}`;
-  }).join('\n\n');
+${messageLines || "    (no messages)"}`;
+    })
+    .join("\n\n");
 
   // Thread context
-  let threadContext = '';
+  let threadContext = "";
   if (message.thread_id) {
     const threadMessages = recentMessages
-      .filter(m => m.thread_id === message.thread_id || m.id === message.thread_id)
+      .filter(
+        (m) => m.thread_id === message.thread_id || m.id === message.thread_id
+      )
       .slice(-5);
-    
+
     if (threadMessages.length > 0) {
       threadContext = `
 THREAD CONTEXT:
-${threadMessages.map(m => `  ${m.author}: "${m.content}"`).join('\n')}
+${threadMessages.map((m) => `  ${m.author}: "${m.content}"`).join("\n")}
 
 `;
     }
   }
 
   // Previous message section (emphasized in hybrid mode)
-  const prevMsgSection = prevMessage && config.preferPreviousMessage
-    ? `
->>> IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago) [Segment ${prevSegmentShortId || '??????'}]:
+  const prevMsgSection =
+    prevMessage && config.preferPreviousMessage
+      ? `
+>>> IMMEDIATELY PREVIOUS MESSAGE (${timeSincePrev} ago) [Segment ${
+          prevSegmentShortId || "??????"
+        }]:
 >>> ${prevMessage.author}: "${prevMessage.content}"
 >>> Messages sent close together usually belong to the same conversation!
 
 `
-    : '';
+      : "";
 
   const options = recentSegments
     .map(({ segment }) => `- ${getSegmentShortId(segment)}`)
-    .concat(['- NEW: Starts a new conversation'])
-    .join('\n');
+    .concat(["- NEW: Starts a new conversation"])
+    .join("\n");
 
   return `RECENT CONVERSATIONS IN #${channelName}:
 
-${conversationBlocks || '(none active recently)'}
+${conversationBlocks || "(none active recently)"}
 
 ---
 ${threadContext}${prevMsgSection}NEW MESSAGE TO CLASSIFY:
@@ -677,6 +818,30 @@ Respond with JSON:
 };
 
 /**
+ * Get the top-level category from a specific speech act label
+ * @param {string} specificAct - e.g., "Query-Technical", "Inform-NewIssue"
+ * @returns {string} - top-level category e.g., "Query", "Inform"
+ */
+const getSpeechActCategory = (specificAct) => {
+  if (!specificAct) return null;
+
+  // Find which category contains this specific act
+  for (const [category, acts] of Object.entries(SPEECH_ACT_SCHEMA)) {
+    if (acts.includes(specificAct)) {
+      return category;
+    }
+  }
+
+  // Fallback: extract from the label prefix (e.g., "Query-Technical" -> "Query")
+  const prefix = specificAct.split("-")[0];
+  if (SPEECH_ACT_SCHEMA[prefix]) {
+    return prefix;
+  }
+
+  return null;
+};
+
+/**
  * Parse LLM response for classification
  * @param {string} response
  * @returns {Object}
@@ -686,19 +851,34 @@ const parseClassificationResponse = (response) => {
 
   // Handle previous-centric format (uses continues_previous/segment instead of conversation)
   const conversation = parsed.conversation || parsed.segment;
-  
-  // Validate required fields
-  if (!conversation || !parsed.role) {
-    throw new Error('Missing required fields in LLM response');
+
+  // Validate required fields - speech_act is now the primary classification
+  if (!conversation) {
+    throw new Error("Missing required fields in LLM response");
+  }
+
+  // Parse speech_act - can be a string or object
+  let speechAct = null;
+  if (parsed.speech_act) {
+    if (typeof parsed.speech_act === "string") {
+      const category = getSpeechActCategory(parsed.speech_act);
+      speechAct = {
+        top_level: category || parsed.speech_act.split("-")[0],
+        specific: parsed.speech_act,
+      };
+    } else {
+      speechAct = parsed.speech_act;
+    }
   }
 
   return {
     conversation: conversation,
     continues_previous: parsed.continues_previous ?? false,
     attachesTo: parsed.attachesTo ?? null,
-    role: parsed.role,
+    role: parsed.role ?? "DEVELOPS", // Keep for backward compatibility
     confidence: parsed.confidence ?? 0.5,
-    reasoning: parsed.reasoning ?? ''
+    reasoning: parsed.reasoning ?? "",
+    speechAct: speechAct,
   };
 };
 
@@ -710,61 +890,112 @@ const parseClassificationResponse = (response) => {
  * @param {string} apiKey
  * @returns {Promise<MessageAnnotation>}
  */
-const classifyWithLLM = async (message, state, recentMessages, allPreviousMessages, apiKey, model, strategyConfig = {}) => {
+const classifyWithLLM = async (
+  message,
+  state,
+  recentMessages,
+  allPreviousMessages,
+  apiKey,
+  model,
+  strategyConfig = {}
+) => {
   // Default strategy config
   const config = {
-    strategy: 'segment-centric',
+    strategy: "segment-centric",
     stalenessThreshold: 30,
     maxSegmentsToShow: 5,
     preferPreviousMessage: true,
-    ...strategyConfig
+    ...strategyConfig,
   };
 
   // Find reference segment - for thread replies, use thread root's segment; otherwise use previous message's segment
   let referenceMessage = null;
   let referenceSegment = null;
-  
+
   if (message.thread_id) {
     // Thread reply - find the thread root in ALL previous messages (not just recent 50)
-    const threadRoot = allPreviousMessages.find(m => m.id === message.thread_id);
-    console.log(`[THREAD DEBUG] Message "${message.content?.slice(0,30)}..." has thread_id: ${message.thread_id}`);
-    console.log(`[THREAD DEBUG] Found thread root in allPreviousMessages: ${threadRoot ? 'YES' : 'NO'} (searched ${allPreviousMessages.length} messages)`);
-    
+    const threadRoot = allPreviousMessages.find(
+      (m) => m.id === message.thread_id
+    );
+    console.log(
+      `[THREAD DEBUG] Message "${message.content?.slice(
+        0,
+        30
+      )}..." has thread_id: ${message.thread_id}`
+    );
+    console.log(
+      `[THREAD DEBUG] Found thread root in allPreviousMessages: ${
+        threadRoot ? "YES" : "NO"
+      } (searched ${allPreviousMessages.length} messages)`
+    );
+
     if (threadRoot) {
       referenceMessage = threadRoot;
-      referenceSegment = state.activeSegments.find(s => s.messageIds.includes(threadRoot.id));
-      console.log(`[THREAD DEBUG] Thread root: "${threadRoot.content?.slice(0,30)}..." by ${threadRoot.author}`);
-      console.log(`[THREAD DEBUG] Found segment for thread root: ${referenceSegment ? 'YES - ' + referenceSegment.id : 'NO'}`);
+      referenceSegment = state.activeSegments.find((s) =>
+        s.messageIds.includes(threadRoot.id)
+      );
+      console.log(
+        `[THREAD DEBUG] Thread root: "${threadRoot.content?.slice(
+          0,
+          30
+        )}..." by ${threadRoot.author}`
+      );
+      console.log(
+        `[THREAD DEBUG] Found segment for thread root: ${
+          referenceSegment ? "YES - " + referenceSegment.id : "NO"
+        }`
+      );
       if (!referenceSegment) {
-        console.log(`[THREAD DEBUG] Active segments:`, state.activeSegments.map(s => ({
-          id: s.id.slice(-8),
-          messageIds: s.messageIds,
-          summary: s.summary?.slice(0,30)
-        })));
+        console.log(
+          `[THREAD DEBUG] Active segments:`,
+          state.activeSegments.map((s) => ({
+            id: s.id.slice(-8),
+            messageIds: s.messageIds,
+            summary: s.summary?.slice(0, 30),
+          }))
+        );
       }
     }
   }
-  
+
   // Fallback to chronologically previous message if not a thread reply or thread root not found
   if (!referenceSegment) {
-    console.log(`[THREAD DEBUG] Using fallback: chronologically previous message`);
-    referenceMessage = recentMessages.length > 0 ? recentMessages[recentMessages.length - 1] : null;
+    console.log(
+      `[THREAD DEBUG] Using fallback: chronologically previous message`
+    );
+    referenceMessage =
+      recentMessages.length > 0
+        ? recentMessages[recentMessages.length - 1]
+        : null;
     if (referenceMessage) {
-      referenceSegment = state.activeSegments.find(s => s.messageIds.includes(referenceMessage.id));
-      console.log(`[THREAD DEBUG] Fallback message: "${referenceMessage.content?.slice(0,30)}..." → segment: ${referenceSegment?.id?.slice(-8)}`);
+      referenceSegment = state.activeSegments.find((s) =>
+        s.messageIds.includes(referenceMessage.id)
+      );
+      console.log(
+        `[THREAD DEBUG] Fallback message: "${referenceMessage.content?.slice(
+          0,
+          30
+        )}..." → segment: ${referenceSegment?.id?.slice(-8)}`
+      );
     }
   }
-  
-  const referenceSegmentShortId = referenceSegment 
+
+  const referenceSegmentShortId = referenceSegment
     ? getSegmentShortId(referenceSegment)
     : null;
 
   // Build prompt based on strategy
   let prompt;
   let systemPrompt = SEGMENTATION_SYSTEM_PROMPT;
-  
-  if (config.strategy === 'previous-centric') {
-    prompt = buildPreviousMessagePrompt(message, state, recentMessages, allPreviousMessages, config);
+
+  if (config.strategy === "previous-centric") {
+    prompt = buildPreviousMessagePrompt(
+      message,
+      state,
+      recentMessages,
+      allPreviousMessages,
+      config
+    );
     systemPrompt = `You are analyzing chat messages to determine if they continue a previous TOPIC or start a new topic.
 
 A TOPIC is a conversation about a SPECIFIC ISSUE or subject. You will be shown:
@@ -793,8 +1024,34 @@ CRITICAL RULES:
    - "+1" or "agreed" without context = reaction to immediately previous message
    - These should attach to the PREVIOUS topic shown, not jump to other topics
 
+5. DIALOGUE ACT CLASSIFICATION: Classify each message using ONE specific label from this taxonomy:
+
+   QUERY (asking questions):
+   - Query-Status, Query-Status-Personal, Query-Status-Environment, Query-Status-TaskOrIssue
+   - Query-Technical, Query-Admin, Query-Through-Uncertainty, Query-For-Clarification
+
+   ASSIGN (delegating work): Assign-Task, Assign-Admin
+
+   REQUEST (asking for action): Request, Request-Help, Request-Attention
+
+   INFORM (sharing information):
+   - Inform-Status-Personal, Inform-Status-Environment, Inform-Status-TaskOrIssue
+   - Inform-Status-TaskOrIssue-Progress, Inform-Status-TaskOrIssue-Impediment
+   - Inform-NewIssue, Inform-NewIssue-Anticipated, Inform-Technical, Inform-Admin
+   - Inform-InResponse, Inform-ExplainRationale, Inform-ClaimTask, Inform-ClaimProblemResponsibility
+
+   PROPOSE (suggesting): Propose-Task, Propose-PossibleSolution, Propose-OfferAssistance, Propose-Admin
+
+   ACKNOWLEDGE (confirming): Acknowledge-Receipt, Acknowledge-Accept, Acknowledge-Affirm, Acknowledge-Validated
+
+   REJECT (declining): Reject, Reject-Counter-Assign, Reject-Counter-Inform, Reject-Counter-Claim, Reject-Counter-Propose
+
+   CODE (code content): Code-Message-Table-Issue, Code-Message-Table-Solution
+
+   SOCIAL (non-work): Social-Blame-Person, Social-Backchannel, Social-Comradery, Social-Appreciation, Social-Frustration
+
 Respond with JSON only.`;
-  } else if (config.strategy === 'hybrid') {
+  } else if (config.strategy === "hybrid") {
     prompt = buildHybridPrompt(message, state, recentMessages, config);
   } else {
     // segment-centric (current/default)
@@ -813,10 +1070,12 @@ Respond with JSON only.`;
     const result = parseClassificationResponse(response);
 
     // Handle previous-centric response format
-    if (config.strategy === 'previous-centric') {
+    if (config.strategy === "previous-centric") {
       // Check if continuing previous/thread topic or new
-      const continuesPrev = result.continues_previous || (result.segment && result.segment !== 'NEW');
-      
+      const continuesPrev =
+        result.continues_previous ||
+        (result.segment && result.segment !== "NEW");
+
       if (continuesPrev && referenceSegment) {
         return {
           messageId: message.id,
@@ -825,9 +1084,10 @@ Respond with JSON only.`;
           segmentId: referenceSegment.id,
           role: result.role,
           confidence: result.confidence,
-          method: 'LLM',
+          method: "LLM",
           reasoning: result.reasoning,
-          annotatedAt: new Date()
+          speechAct: result.speechAct,
+          annotatedAt: new Date(),
         };
       } else {
         // New topic
@@ -837,18 +1097,19 @@ Respond with JSON only.`;
           conversationId: message.conversation_id,
           attachesTo: null,
           segmentId: newSegment.id,
-          role: result.role || 'INITIATES',
+          role: result.role || "INITIATES",
           confidence: result.confidence,
-          method: 'LLM',
+          method: "LLM",
           reasoning: result.reasoning,
-          annotatedAt: new Date()
+          speechAct: result.speechAct,
+          annotatedAt: new Date(),
         };
       }
     }
 
     // Handle segment-centric and hybrid response format
     // Handle NEW conversation
-    if (result.conversation === 'NEW') {
+    if (result.conversation === "NEW") {
       const newSegment = createSegment(message, state);
       return {
         messageId: message.id,
@@ -857,9 +1118,10 @@ Respond with JSON only.`;
         segmentId: newSegment.id,
         role: result.role,
         confidence: result.confidence,
-        method: 'LLM',
+        method: "LLM",
         reasoning: result.reasoning,
-        annotatedAt: new Date()
+        speechAct: result.speechAct,
+        annotatedAt: new Date(),
       };
     }
 
@@ -868,9 +1130,10 @@ Respond with JSON only.`;
 
     if (!segment) {
       // Fallback: try to find most recent segment if segment ID is invalid
-      const fallbackSegment = state.activeSegments[state.activeSegments.length - 1];
-      
-      if (fallbackSegment && result.role !== 'INITIATES') {
+      const fallbackSegment =
+        state.activeSegments[state.activeSegments.length - 1];
+
+      if (fallbackSegment && result.role !== "INITIATES") {
         return {
           messageId: message.id,
           conversationId: message.conversation_id,
@@ -878,12 +1141,13 @@ Respond with JSON only.`;
           segmentId: fallbackSegment.id,
           role: result.role,
           confidence: result.confidence * 0.7,
-          method: 'LLM',
+          method: "LLM",
           reasoning: `${result.reasoning} (attached to most recent segment due to invalid ID ${result.conversation})`,
-          annotatedAt: new Date()
+          speechAct: result.speechAct,
+          annotatedAt: new Date(),
         };
       }
-      
+
       // Create new segment if no fallback available or role is INITIATES
       const newSegment = createSegment(message, state);
       return {
@@ -893,9 +1157,10 @@ Respond with JSON only.`;
         segmentId: newSegment.id,
         role: result.role,
         confidence: result.confidence * 0.5,
-        method: 'LLM',
+        method: "LLM",
         reasoning: `${result.reasoning} (new segment: invalid ID ${result.conversation})`,
-        annotatedAt: new Date()
+        speechAct: result.speechAct,
+        annotatedAt: new Date(),
       };
     }
 
@@ -906,13 +1171,13 @@ Respond with JSON only.`;
       segmentId: segment.id,
       role: result.role,
       confidence: result.confidence,
-      method: 'LLM',
+      method: "LLM",
       reasoning: result.reasoning,
-      annotatedAt: new Date()
+      speechAct: result.speechAct,
+      annotatedAt: new Date(),
     };
-
   } catch (error) {
-    console.error('LLM classification failed:', error);
+    console.error("LLM classification failed:", error);
 
     // Fallback: create new segment
     const newSegment = createSegment(message, state);
@@ -921,11 +1186,12 @@ Respond with JSON only.`;
       conversationId: message.conversation_id,
       attachesTo: null,
       segmentId: newSegment.id,
-      role: 'INITIATES',
+      role: "INITIATES",
       confidence: 0.0,
-      method: 'LLM',
+      method: "LLM",
       reasoning: `Fallback due to classification error: ${error.message}`,
-      annotatedAt: new Date()
+      speechAct: null,
+      annotatedAt: new Date(),
     };
   }
 };
@@ -940,7 +1206,14 @@ Respond with JSON only.`;
  * @param {Function} addDebugLog - callback for debug logs
  * @returns {Promise<{segments: Segment[], annotations: MessageAnnotation[]}>}
  */
-const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgress, addDebugLog) => {
+const segmentMessages = async (
+  messages,
+  apiKey,
+  model,
+  strategyConfig,
+  onProgress,
+  addDebugLog
+) => {
   // Initialize state per conversation
   const statesByConversation = new Map();
   const allAnnotations = [];
@@ -949,7 +1222,7 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
     if (!statesByConversation.has(conversationId)) {
       statesByConversation.set(conversationId, {
         conversationId,
-        activeSegments: []
+        activeSegments: [],
       });
     }
     return statesByConversation.get(conversationId);
@@ -963,16 +1236,20 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
   for (let i = 0; i < sorted.length; i++) {
     const message = sorted[i];
     const state = getOrCreateState(message.conversation_id);
-    
+
     // Get all previous messages in this conversation for thread root lookup
     const allPreviousMessages = sorted
       .slice(0, i)
-      .filter(m => m.conversation_id === message.conversation_id);
-    
+      .filter((m) => m.conversation_id === message.conversation_id);
+
     // Get recent messages for context (last 50 in this conversation)
     const recentMessages = allPreviousMessages.slice(-50);
 
-    onProgress(i + 1, sorted.length, `Processing message ${i + 1}/${sorted.length}`);
+    onProgress(
+      i + 1,
+      sorted.length,
+      `Processing message ${i + 1}/${sorted.length}`
+    );
 
     // Step 1: Check structural signals
     let annotation = checkStructuralSignals(message, state);
@@ -981,28 +1258,44 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
       addDebugLog({
         title: `Message ${i + 1}: Structural`,
         request: `${message.author}: "${message.content?.slice(0, 50)}..."`,
-        response: `${annotation.method}: ${annotation.reasoning} → Segment ${getSegmentShortId(
-          state.activeSegments.find(s => s.id === annotation.segmentId)
-        ) || 'NEW'}`
+        response: `${annotation.method}: ${annotation.reasoning} → Segment ${
+          getSegmentShortId(
+            state.activeSegments.find((s) => s.id === annotation.segmentId)
+          ) || "NEW"
+        }`,
       });
     } else {
       // Step 2: LLM classification using configured strategy
       addDebugLog({
-        title: `Message ${i + 1}: LLM (${strategyConfig.strategy || 'segment-centric'})`,
+        title: `Message ${i + 1}: LLM (${
+          strategyConfig.strategy || "segment-centric"
+        })`,
         request: `${message.author}: "${message.content?.slice(0, 80)}..."`,
-        response: '(processing...)'
+        response: "(processing...)",
       });
 
-      annotation = await classifyWithLLM(message, state, recentMessages, allPreviousMessages, apiKey, model, strategyConfig);
+      annotation = await classifyWithLLM(
+        message,
+        state,
+        recentMessages,
+        allPreviousMessages,
+        apiKey,
+        model,
+        strategyConfig
+      );
 
       // Update debug log with response
-      const segmentShortId = getSegmentShortId(
-        state.activeSegments.find(s => s.id === annotation.segmentId)
-      ) || '??????';
+      const segmentShortId =
+        getSegmentShortId(
+          state.activeSegments.find((s) => s.id === annotation.segmentId)
+        ) || "??????";
 
+      const speechActLabel = annotation.speechAct?.specific || "unknown";
       addDebugLog({
         title: `Message ${i + 1}: Result`,
-        response: `${annotation.role} → Segment ${segmentShortId} (${(annotation.confidence * 100).toFixed(0)}%)\n${annotation.reasoning}`
+        response: `${speechActLabel} → Segment ${segmentShortId} (${(
+          annotation.confidence * 100
+        ).toFixed(0)}%)\n${annotation.reasoning}`,
       });
     }
 
@@ -1012,7 +1305,7 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
 
     // Small delay to avoid rate limits
     if (i < sorted.length - 1) {
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
     }
   }
 
@@ -1024,7 +1317,7 @@ const segmentMessages = async (messages, apiKey, model, strategyConfig, onProgre
 
   return {
     segments: allSegments,
-    annotations: allAnnotations
+    annotations: allAnnotations,
   };
 };
 
@@ -1048,14 +1341,22 @@ const extractMessages = (data) => {
   const isFormatA = !!sample?.workspace_event;
   const isFormatB = !!sample?.markdown_content && !!sample?.author_id;
 
-  console.log(`Detected data format: ${isFormatA ? 'A (nested workspace_event)' : isFormatB ? 'B (flat message array)' : 'Unknown'}`);
+  console.log(
+    `Detected data format: ${
+      isFormatA
+        ? "A (nested workspace_event)"
+        : isFormatB
+        ? "B (flat message array)"
+        : "Unknown"
+    }`
+  );
 
   // Build author name lookup from mentions in messages (for Format B)
   const authorNames = new Map();
   if (isFormatB) {
     // Extract author names from member mentions like <!member_group:uuid|Name>
-    data.forEach(item => {
-      const content = item.markdown_content || '';
+    data.forEach((item) => {
+      const content = item.markdown_content || "";
       const mentions = content.matchAll(/<!member_group:([^|]+)\|([^>]+)>/g);
       for (const match of mentions) {
         const memberId = match[1];
@@ -1068,69 +1369,79 @@ const extractMessages = (data) => {
   }
 
   // Get short ID for display (first 8 chars of UUID)
-  const shortId = (id) => id?.slice(0, 8) || 'unknown';
+  const shortId = (id) => id?.slice(0, 8) || "unknown";
 
   const messages = data.map((item) => {
-      if (isFormatA) {
-        // Format A: Nested workspace_event structure
-        const msg = item?.workspace_event?.message || {};
-        const actor = item?.workspace_event?.actor_member || {};
-        const conv = item?.workspace_event?.conversation || {};
-        return {
-          id: item.id,
-          created_at: msg.created_at || "",
-          content: msg.markdown_content || "",
-          author: actor.display_name || "Unknown",
-          authorId: actor.id || "",
-          conversation_id: item?.workspace_event?.conversation_id || "",
-          conversation_name: conv.name || "",
-          thread_id: item?.workspace_event?.thread_root_id || null,
-        };
-      } else if (isFormatB) {
-        // Format B: Flat message array
-        const authorId = item.author_id || "";
-        const conversationId = item.conversation_id || "";
-        // Try hardcoded mapping first, then extracted mentions, then fallback
-        const authorName = AUTHOR_ID_MAP[authorId] || authorNames.get(authorId) || `User-${shortId(authorId)}`;
-        // Map conversation ID to channel name
-        const conversationName = CONVERSATION_NAME_MAP[conversationId] || "";
-        return {
-          id: item.id,
-          created_at: item.created_at || "",
-          content: item.markdown_content || "",
-          author: authorName,
-          authorId: authorId,
-          conversation_id: conversationId,
-          conversation_name: conversationName,
-          thread_id: item.thread_root_id || null,
-        };
-      } else {
-        // Unknown format - try to extract what we can
-        return {
-          id: item.id || "",
-          created_at: item.created_at || "",
-          content: item.content || item.markdown_content || "",
-          author: item.author || item.author_id || "Unknown",
-          authorId: item.author_id || "",
-          conversation_id: item.conversation_id || "",
-          conversation_name: item.conversation_name || "",
-          thread_id: item.thread_root_id || item.thread_id || null,
-        };
-      }
-    });
+    if (isFormatA) {
+      // Format A: Nested workspace_event structure
+      const msg = item?.workspace_event?.message || {};
+      const actor = item?.workspace_event?.actor_member || {};
+      const conv = item?.workspace_event?.conversation || {};
+      return {
+        id: item.id,
+        created_at: msg.created_at || "",
+        content: msg.markdown_content || "",
+        author: actor.display_name || "Unknown",
+        authorId: actor.id || "",
+        conversation_id: item?.workspace_event?.conversation_id || "",
+        conversation_name: conv.name || "",
+        thread_id: item?.workspace_event?.thread_root_id || null,
+      };
+    } else if (isFormatB) {
+      // Format B: Flat message array
+      const authorId = item.author_id || "";
+      const conversationId = item.conversation_id || "";
+      // Try hardcoded mapping first, then extracted mentions, then fallback
+      const authorName =
+        AUTHOR_ID_MAP[authorId] ||
+        authorNames.get(authorId) ||
+        `User-${shortId(authorId)}`;
+      // Map conversation ID to channel name
+      const conversationName = CONVERSATION_NAME_MAP[conversationId] || "";
+      return {
+        id: item.id,
+        created_at: item.created_at || "",
+        content: item.markdown_content || "",
+        author: authorName,
+        authorId: authorId,
+        conversation_id: conversationId,
+        conversation_name: conversationName,
+        thread_id: item.thread_root_id || null,
+      };
+    } else {
+      // Unknown format - try to extract what we can
+      return {
+        id: item.id || "",
+        created_at: item.created_at || "",
+        content: item.content || item.markdown_content || "",
+        author: item.author || item.author_id || "Unknown",
+        authorId: item.author_id || "",
+        conversation_id: item.conversation_id || "",
+        conversation_name: item.conversation_name || "",
+        thread_id: item.thread_root_id || item.thread_id || null,
+      };
+    }
+  });
 
   // First filter: must have id, created_at, AND non-empty content (skip images)
-  const validMessages = messages.filter((m) => m.id && m.created_at && m.content && m.content.trim().length > 0);
-  
+  const validMessages = messages.filter(
+    (m) => m.id && m.created_at && m.content && m.content.trim().length > 0
+  );
+
   // Get set of valid message IDs
-  const validMessageIds = new Set(validMessages.map(m => m.id));
-  
+  const validMessageIds = new Set(validMessages.map((m) => m.id));
+
   // Second filter: remove thread replies whose thread root was filtered out (empty/image)
   return validMessages.filter((m) => {
     if (!m.thread_id) return true; // Not a thread reply, keep it
     // Check if the thread root exists in the valid messages
     if (!validMessageIds.has(m.thread_id)) {
-      console.log(`Filtering out thread reply "${m.content?.slice(0, 30)}..." - thread root was empty/filtered`);
+      console.log(
+        `Filtering out thread reply "${m.content?.slice(
+          0,
+          30
+        )}..." - thread root was empty/filtered`
+      );
       return false;
     }
     return true;
@@ -1341,7 +1652,14 @@ const createUnit = (messages, index) => ({
 // API CALLS
 // ============================================
 
-const callAnthropic = async (apiKey, system, userMessage, maxTokens = 2000, model = "claude-3-5-haiku-20241022", timeoutMs = 120000) => {
+const callAnthropic = async (
+  apiKey,
+  system,
+  userMessage,
+  maxTokens = 2000,
+  model = "claude-3-5-haiku-20241022",
+  timeoutMs = 120000
+) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -1378,7 +1696,7 @@ const callAnthropic = async (apiKey, system, userMessage, maxTokens = 2000, mode
     return data.content[0].text;
   } catch (err) {
     clearTimeout(timeoutId);
-    if (err.name === 'AbortError') {
+    if (err.name === "AbortError") {
       throw new Error(`Request timed out after ${timeoutMs / 1000} seconds`);
     }
     throw err;
@@ -1614,7 +1932,13 @@ Reply ONLY:
 }`;
 
     try {
-      const response = await callAnthropic(apiKey, system, userMessage, 1000, model);
+      const response = await callAnthropic(
+        apiKey,
+        system,
+        userMessage,
+        1000,
+        model
+      );
       const result = parseJSONSafe(response);
 
       if (result.pairs && Array.isArray(result.pairs)) {
@@ -1824,7 +2148,12 @@ const ProgressBar = ({ current, total, label }) => (
   </div>
 );
 
-const MessageBubble = ({ message, colorMap, compact = false, showGroupIndex = false }) => {
+const MessageBubble = ({
+  message,
+  colorMap,
+  compact = false,
+  showGroupIndex = false,
+}) => {
   const colors = getAuthorColor(message.author, colorMap);
   return (
     <div className={`flex gap-2 ${compact ? "py-0.5" : "py-1"}`}>
@@ -1853,14 +2182,18 @@ const MessageBubble = ({ message, colorMap, compact = false, showGroupIndex = fa
           </span>
           <span
             onClick={() => navigator.clipboard.writeText(message.id)}
-            className={`${compact ? "text-[10px]" : "text-xs"} text-gray-300 font-mono cursor-pointer hover:text-blue-500 hover:underline`}
+            className={`${
+              compact ? "text-[10px]" : "text-xs"
+            } text-gray-300 font-mono cursor-pointer hover:text-blue-500 hover:underline`}
             title="Click to copy"
           >
             {message.id}
           </span>
           {showGroupIndex && message.groupId && (
             <span
-              className={`${compact ? "text-[10px]" : "text-xs"} bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium font-mono`}
+              className={`${
+                compact ? "text-[10px]" : "text-xs"
+              } bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium font-mono`}
               title={message.groupId}
             >
               {message.groupId?.slice(0, 6)}
@@ -1885,7 +2218,7 @@ const UnitCard = ({ unit, colorMap, highlight, badge }) => {
   const [expanded, setExpanded] = useState(false);
   const hasMore = unit.messages.length > 2;
   const messagesToShow = expanded ? unit.messages : unit.messages.slice(0, 2);
-  const unitShortId = unit.id?.slice(0, 6) || '??????';
+  const unitShortId = unit.id?.slice(0, 6) || "??????";
 
   return (
     <div
@@ -1936,28 +2269,46 @@ const UnitCard = ({ unit, colorMap, highlight, badge }) => {
 
 // Role color mapping for annotations
 const roleColors = {
-  INITIATES: { bg: 'bg-green-100', text: 'text-green-700', dot: 'bg-green-500' },
-  DEVELOPS: { bg: 'bg-blue-100', text: 'text-blue-700', dot: 'bg-blue-500' },
-  RESPONDS: { bg: 'bg-purple-100', text: 'text-purple-700', dot: 'bg-purple-500' },
-  RESOLVES: { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500' },
-  REACTS: { bg: 'bg-amber-100', text: 'text-amber-700', dot: 'bg-amber-500' },
+  INITIATES: {
+    bg: "bg-green-100",
+    text: "text-green-700",
+    dot: "bg-green-500",
+  },
+  DEVELOPS: { bg: "bg-blue-100", text: "text-blue-700", dot: "bg-blue-500" },
+  RESPONDS: {
+    bg: "bg-purple-100",
+    text: "text-purple-700",
+    dot: "bg-purple-500",
+  },
+  RESOLVES: {
+    bg: "bg-emerald-100",
+    text: "text-emerald-700",
+    dot: "bg-emerald-500",
+  },
+  REACTS: { bg: "bg-amber-100", text: "text-amber-700", dot: "bg-amber-500" },
 };
 
 const statusColors = {
-  OPEN: { bg: 'bg-blue-50', border: 'border-blue-300', text: 'text-blue-700' },
-  RESOLVED: { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-700' },
-  STALE: { bg: 'bg-gray-50', border: 'border-gray-300', text: 'text-gray-500' },
+  OPEN: { bg: "bg-blue-50", border: "border-blue-300", text: "text-blue-700" },
+  RESOLVED: {
+    bg: "bg-green-50",
+    border: "border-green-300",
+    text: "text-green-700",
+  },
+  STALE: { bg: "bg-gray-50", border: "border-gray-300", text: "text-gray-500" },
 };
 
 const SegmentCard = ({ segment, index, colorMap, annotations }) => {
   const [expanded, setExpanded] = useState(false);
   const hasMore = segment.messages.length > 3;
-  const messagesToShow = expanded ? segment.messages : segment.messages.slice(0, 3);
+  const messagesToShow = expanded
+    ? segment.messages
+    : segment.messages.slice(0, 3);
   const status = statusColors[segment.status] || statusColors.OPEN;
 
   // Get annotation for a message
   const getAnnotation = (messageId) => {
-    return annotations?.find(a => a.messageId === messageId);
+    return annotations?.find((a) => a.messageId === messageId);
   };
 
   return (
@@ -1965,13 +2316,15 @@ const SegmentCard = ({ segment, index, colorMap, annotations }) => {
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-bold text-gray-700 font-mono">
-            {segment.id?.slice(0, 6) || '??????'}
+            {segment.id?.slice(0, 6) || "??????"}
           </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${status.text} ${status.bg}`}>
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${status.text} ${status.bg}`}
+          >
             {segment.status}
           </span>
           <span className="text-[10px] text-gray-400">
-            #{segment.messages[0]?.conversation_name || 'DM'}
+            #{segment.messages[0]?.conversation_name || "DM"}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -1983,20 +2336,22 @@ const SegmentCard = ({ segment, index, colorMap, annotations }) => {
           </span>
         </div>
       </div>
-      
-      <div className="text-xs text-gray-600 mb-2 italic">
-        {segment.summary}
-      </div>
+
+      <div className="text-xs text-gray-600 mb-2 italic">{segment.summary}</div>
 
       <div className="space-y-1">
         {messagesToShow.map((m) => {
           const annotation = getAnnotation(m.id);
-          const role = roleColors[annotation?.role] || roleColors.DEVELOPS;
-          
+          const actColor =
+            speechActColors[annotation?.speechAct?.top_level] ||
+            speechActColors.Inform;
+
           return (
             <div key={m.id} className="bg-white/70 rounded p-1.5">
               <div className="flex items-start gap-2">
-                <div className={`w-1 h-full min-h-[20px] rounded ${role.dot}`} />
+                <div
+                  className={`w-1 h-full min-h-[20px] rounded ${actColor.dot}`}
+                />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[10px] font-medium text-gray-700">
@@ -2005,10 +2360,12 @@ const SegmentCard = ({ segment, index, colorMap, annotations }) => {
                     <span className="text-[10px] text-gray-400">
                       {formatShortTime(m.created_at)}
                     </span>
-                    {annotation && (
-                      <span className={`text-[9px] px-1 py-0.5 rounded ${role.bg} ${role.text}`}>
-                        {annotation.role}
-                        {annotation.method === 'STRUCTURAL' && ' (structural)'}
+                    {annotation?.speechAct && (
+                      <span
+                        className={`text-[9px] px-1 py-0.5 rounded ${actColor.bg} ${actColor.text}`}
+                      >
+                        {annotation.speechAct.specific}
+                        {annotation.method === "STRUCTURAL" && " (auto)"}
                       </span>
                     )}
                     {annotation && (
@@ -2018,7 +2375,9 @@ const SegmentCard = ({ segment, index, colorMap, annotations }) => {
                     )}
                   </div>
                   <p className="text-xs text-gray-700 break-words">
-                    {m.content || <span className="italic text-gray-400">[empty]</span>}
+                    {m.content || (
+                      <span className="italic text-gray-400">[empty]</span>
+                    )}
                   </p>
                   {annotation?.reasoning && (
                     <p className="text-[9px] text-gray-400 mt-0.5 italic">
@@ -2049,18 +2408,21 @@ const SegmentCard = ({ segment, index, colorMap, annotations }) => {
 // SLACK-LIKE TIMELINE COMPONENTS
 // ============================================
 
-const ConversationSidebar = ({ 
-  conversations, 
-  selectedId, 
-  onSelect, 
+const ConversationSidebar = ({
+  conversations,
+  selectedId,
+  onSelect,
   llmSegments,
-  llmAnnotations 
+  llmAnnotations,
 }) => {
   // Count segments per conversation
   const getSegmentCount = (conversationId) => {
-    const messageIds = conversations.find(c => c.id === conversationId)?.messages.map(m => m.id) || [];
+    const messageIds =
+      conversations
+        .find((c) => c.id === conversationId)
+        ?.messages.map((m) => m.id) || [];
     const segmentIds = new Set();
-    llmAnnotations.forEach(a => {
+    llmAnnotations.forEach((a) => {
       if (messageIds.includes(a.messageId)) {
         segmentIds.add(a.segmentId);
       }
@@ -2075,9 +2437,9 @@ const ConversationSidebar = ({
     }
     // For DMs, show participants
     if (conv.participants && conv.participants.length > 0) {
-      return conv.participants.join(', ');
+      return conv.participants.join(", ");
     }
-    return 'DM';
+    return "DM";
   };
 
   return (
@@ -2092,41 +2454,55 @@ const ConversationSidebar = ({
           const isSelected = conv.id === selectedId;
           const segmentCount = getSegmentCount(conv.id);
           const label = getConversationLabel(conv);
-          
+
           return (
             <button
               key={conv.id}
               onClick={() => onSelect(conv.id)}
               className={`w-full px-3 py-2 text-left transition-colors ${
-                isSelected 
-                  ? 'bg-blue-100 border-l-4 border-blue-500' 
-                  : 'hover:bg-gray-100 border-l-4 border-transparent'
+                isSelected
+                  ? "bg-blue-100 border-l-4 border-blue-500"
+                  : "hover:bg-gray-100 border-l-4 border-transparent"
               }`}
             >
               <div className="flex items-center justify-between">
-                <span className={`text-sm truncate ${isSelected ? 'font-semibold text-blue-900' : 'text-gray-700'}`}>
+                <span
+                  className={`text-sm truncate ${
+                    isSelected ? "font-semibold text-blue-900" : "text-gray-700"
+                  }`}
+                >
                   {conv.isChannel ? label : `@${label}`}
                 </span>
                 <span className="flex items-center gap-1 flex-shrink-0 ml-2">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                    isSelected ? 'bg-blue-200 text-blue-800' : 'bg-gray-200 text-gray-600'
-                  }`}>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded ${
+                      isSelected
+                        ? "bg-blue-200 text-blue-800"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                  >
                     {conv.messages.length}
                   </span>
                   {segmentCount > 0 && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                      isSelected ? 'bg-purple-200 text-purple-800' : 'bg-purple-100 text-purple-600'
-                    }`}>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        isSelected
+                          ? "bg-purple-200 text-purple-800"
+                          : "bg-purple-100 text-purple-600"
+                      }`}
+                    >
                       {segmentCount}
                     </span>
                   )}
                 </span>
               </div>
-              {!conv.isChannel && conv.participants && conv.participants.length > 2 && (
-                <div className="text-[10px] text-gray-400 mt-0.5 truncate">
-                  {conv.participants.length} participants
-                </div>
-              )}
+              {!conv.isChannel &&
+                conv.participants &&
+                conv.participants.length > 2 && (
+                  <div className="text-[10px] text-gray-400 mt-0.5 truncate">
+                    {conv.participants.length} participants
+                  </div>
+                )}
             </button>
           );
         })}
@@ -2135,35 +2511,42 @@ const ConversationSidebar = ({
   );
 };
 
-const TimelineMessage = ({ 
-  message, 
-  annotation, 
+const TimelineMessage = ({
+  message,
+  annotation,
   segment,
-  segmentColor, 
+  segmentColor,
   isThreadReply,
-  colorMap 
+  colorMap,
 }) => {
   const authorColor = getAuthorColor(message.author, colorMap);
-  const role = roleColors[annotation?.role] || roleColors.DEVELOPS;
-  const segmentShortId = segment?.id?.slice(0, 6) || '??????';
+  const speechActColor =
+    speechActColors[annotation?.speechAct?.top_level] || speechActColors.Inform;
+  const segmentShortId = segment?.id?.slice(0, 6) || "??????";
 
   return (
-    <div className={`flex gap-3 py-1.5 px-3 hover:bg-gray-50 transition-colors ${isThreadReply ? 'ml-10 border-l-2 border-gray-200' : ''}`}>
+    <div
+      className={`flex gap-3 py-1.5 px-3 hover:bg-gray-50 transition-colors ${
+        isThreadReply ? "ml-10 border-l-2 border-gray-200" : ""
+      }`}
+    >
       {/* Segment indicator - per message */}
-      <div 
-        className={`w-auto min-w-[2rem] h-6 px-1 rounded flex items-center justify-center text-[10px] font-mono font-bold flex-shrink-0 ${segmentColor?.bg || 'bg-gray-100'} ${segmentColor?.text || 'text-gray-600'}`}
+      <div
+        className={`w-auto min-w-[2rem] h-6 px-1 rounded flex items-center justify-center text-[10px] font-mono font-bold flex-shrink-0 ${
+          segmentColor?.bg || "bg-gray-100"
+        } ${segmentColor?.text || "text-gray-600"}`}
         title={`Segment ${segmentShortId}`}
       >
         {segmentShortId}
       </div>
-      
+
       {/* Avatar */}
-      <div 
+      <div
         className={`w-8 h-8 rounded-full ${authorColor.dot} flex items-center justify-center text-white text-sm font-medium flex-shrink-0`}
       >
         {message.author.charAt(0).toUpperCase()}
       </div>
-      
+
       {/* Content */}
       <div className="flex-1 min-w-0">
         {/* Header */}
@@ -2174,32 +2557,34 @@ const TimelineMessage = ({
           <span className="text-xs text-gray-400">
             {formatTime(message.created_at)}
           </span>
-          
-          {/* Annotation badges */}
-          {annotation && (
+
+          {/* Annotation badge - speech act classification */}
+          {annotation?.speechAct && (
             <>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${role.bg} ${role.text}`}>
-                {annotation.role}
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${speechActColor.bg} ${speechActColor.text}`}
+              >
+                {annotation.speechAct.specific}
               </span>
               <span className="text-[10px] text-gray-400">
                 {(annotation.confidence * 100).toFixed(0)}%
               </span>
             </>
           )}
-          
+
           {/* Thread indicator */}
           {isThreadReply && (
-            <span className="text-[10px] text-gray-400">
-              (thread)
-            </span>
+            <span className="text-[10px] text-gray-400">(thread)</span>
           )}
         </div>
-        
+
         {/* Message content */}
         <p className="text-sm text-gray-800 mt-0.5 whitespace-pre-wrap break-words">
-          {formatMessageContent(message.content) || <span className="italic text-gray-400">[empty message]</span>}
+          {formatMessageContent(message.content) || (
+            <span className="italic text-gray-400">[empty message]</span>
+          )}
         </p>
-        
+
         {/* Reasoning (if available) */}
         {annotation?.reasoning && (
           <p className="text-xs text-gray-400 mt-1 italic">
@@ -2212,21 +2597,31 @@ const TimelineMessage = ({
 };
 
 const SegmentDivider = ({ segment, segmentColor }) => {
-  const segmentShortId = segment?.id?.slice(0, 6) || '??????';
+  const segmentShortId = segment?.id?.slice(0, 6) || "??????";
   return (
-    <div className={`flex items-center gap-3 px-4 py-2 ${segmentColor?.bg || 'bg-gray-50'} border-l-4 ${segmentColor?.border || 'border-l-gray-300'}`}>
-      <div className={`text-sm font-bold font-mono ${segmentColor?.text || 'text-gray-600'}`}>
+    <div
+      className={`flex items-center gap-3 px-4 py-2 ${
+        segmentColor?.bg || "bg-gray-50"
+      } border-l-4 ${segmentColor?.border || "border-l-gray-300"}`}
+    >
+      <div
+        className={`text-sm font-bold font-mono ${
+          segmentColor?.text || "text-gray-600"
+        }`}
+      >
         Segment {segmentShortId}
       </div>
       <div className="flex-1 h-px bg-current opacity-20" />
-      <div className="text-xs text-gray-500">
-        {segment.summary}
-      </div>
-      <div className={`text-[10px] px-1.5 py-0.5 rounded ${
-        segment.status === 'RESOLVED' ? 'bg-green-100 text-green-700' :
-        segment.status === 'STALE' ? 'bg-gray-100 text-gray-500' :
-        'bg-blue-100 text-blue-700'
-      }`}>
+      <div className="text-xs text-gray-500">{segment.summary}</div>
+      <div
+        className={`text-[10px] px-1.5 py-0.5 rounded ${
+          segment.status === "RESOLVED"
+            ? "bg-green-100 text-green-700"
+            : segment.status === "STALE"
+            ? "bg-gray-100 text-gray-500"
+            : "bg-blue-100 text-blue-700"
+        }`}
+      >
         {segment.status}
       </div>
       <div className="text-xs text-gray-400">
@@ -2236,15 +2631,15 @@ const SegmentDivider = ({ segment, segmentColor }) => {
   );
 };
 
-const MessageTimeline = ({ 
-  conversation, 
-  llmSegments, 
-  llmAnnotations, 
+const MessageTimeline = ({
+  conversation,
+  llmSegments,
+  llmAnnotations,
   getAnnotationForMessage,
   getSegmentForMessage,
   getSegmentIndex,
   getSegmentColor,
-  colorMap 
+  colorMap,
 }) => {
   const [showSegmentPanel, setShowSegmentPanel] = useState(true);
 
@@ -2260,14 +2655,16 @@ const MessageTimeline = ({
   }
 
   const messages = conversation.messages;
-  
+
   // Organize messages: identify thread roots and thread replies
   // Thread roots are messages with no thread_id OR messages that are referenced as thread_id by others
-  const threadRootIds = new Set(messages.filter(m => m.thread_id).map(m => m.thread_id));
-  
+  const threadRootIds = new Set(
+    messages.filter((m) => m.thread_id).map((m) => m.thread_id)
+  );
+
   // Create a map of thread_id -> replies
   const threadReplies = new Map();
-  messages.forEach(msg => {
+  messages.forEach((msg) => {
     if (msg.thread_id) {
       if (!threadReplies.has(msg.thread_id)) {
         threadReplies.set(msg.thread_id, []);
@@ -2275,10 +2672,10 @@ const MessageTimeline = ({
       threadReplies.get(msg.thread_id).push(msg);
     }
   });
-  
+
   // Get top-level messages (no thread_id, or is itself a thread root)
-  const topLevelMessages = messages.filter(msg => !msg.thread_id);
-  
+  const topLevelMessages = messages.filter((msg) => !msg.thread_id);
+
   // Build message info with segment data
   const buildMessageInfo = (msg, isThreadReply = false) => {
     const annotation = getAnnotationForMessage(msg.id);
@@ -2286,25 +2683,111 @@ const MessageTimeline = ({
     const segmentId = segment?.id || null;
     const segmentIndex = segment ? getSegmentIndex(segmentId) : -1;
     const segmentColor = segment ? getSegmentColor(segmentId) : null;
-    
+
     return {
       message: msg,
       annotation,
       segment,
       segmentIndex,
       segmentColor,
-      isThreadReply
+      isThreadReply,
     };
   };
 
   // Get unique segments in this conversation for the header
-  const conversationSegments = [...new Set(
-    messages
-      .map(m => getAnnotationForMessage(m.id))
-      .filter(Boolean)
-      .map(a => getSegmentForMessage(a.messageId)?.id)
-      .filter(Boolean)
-  )].map(id => llmSegments.find(s => s.id === id)).filter(Boolean);
+  const conversationSegments = [
+    ...new Set(
+      messages
+        .map((m) => getAnnotationForMessage(m.id))
+        .filter(Boolean)
+        .map((a) => getSegmentForMessage(a.messageId)?.id)
+        .filter(Boolean)
+    ),
+  ]
+    .map((id) => llmSegments.find((s) => s.id === id))
+    .filter(Boolean);
+
+  // Export data as JSON for analysis
+  const handleExportJSON = () => {
+    // Build export data structure
+    const exportData = {
+      conversation: {
+        id: conversation.id,
+        name: conversation.name,
+        isChannel: conversation.isChannel,
+        messageCount: messages.length,
+        topicCount: conversationSegments.length,
+      },
+      topics: conversationSegments.map((segment) => {
+        const segmentMessages = messages.filter((m) =>
+          segment.messageIds.includes(m.id)
+        );
+        return {
+          id: segment.id,
+          shortId: segment.id.slice(0, 6),
+          summary: segment.summary,
+          status: segment.status,
+          participants: segment.participants,
+          messageCount: segmentMessages.length,
+          messages: segmentMessages.map((m) => {
+            const annotation = getAnnotationForMessage(m.id);
+            return {
+              id: m.id,
+              author: m.author,
+              content: m.content,
+              created_at: m.created_at,
+              thread_id: m.thread_id || null,
+              annotation: annotation
+                ? {
+                    speechAct: annotation.speechAct?.specific || null,
+                    speechActCategory: annotation.speechAct?.top_level || null,
+                    confidence: annotation.confidence,
+                    reasoning: annotation.reasoning,
+                  }
+                : null,
+            };
+          }),
+        };
+      }),
+      // Aggregate stats by participant and speech act
+      participantStats: (() => {
+        const stats = {};
+        messages.forEach((m) => {
+          const annotation = getAnnotationForMessage(m.id);
+          const speechAct = annotation?.speechAct?.specific || "unknown";
+          const category = annotation?.speechAct?.top_level || "unknown";
+
+          if (!stats[m.author]) {
+            stats[m.author] = {
+              totalMessages: 0,
+              byCategory: {},
+              bySpeechAct: {},
+            };
+          }
+          stats[m.author].totalMessages++;
+          stats[m.author].byCategory[category] =
+            (stats[m.author].byCategory[category] || 0) + 1;
+          stats[m.author].bySpeechAct[speechAct] =
+            (stats[m.author].bySpeechAct[speechAct] || 0) + 1;
+        });
+        return stats;
+      })(),
+      exportedAt: new Date().toISOString(),
+    };
+
+    // Download as JSON file
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${conversation.name}-topics-export.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="flex-1 flex overflow-hidden">
@@ -2314,7 +2797,8 @@ const MessageTimeline = ({
         <div className="px-4 py-2 border-b bg-white flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-lg font-semibold text-gray-800">
-              {conversation.isChannel ? '#' : '@'}{conversation.name}
+              {conversation.isChannel ? "#" : "@"}
+              {conversation.name}
             </span>
             <span className="text-sm text-gray-500">
               {conversation.messages.length} messages
@@ -2325,18 +2809,27 @@ const MessageTimeline = ({
               </span>
             )}
           </div>
-          <button
-            onClick={() => setShowSegmentPanel(!showSegmentPanel)}
-            className={`text-xs px-2 py-1 rounded transition-colors ${
-              showSegmentPanel 
-                ? 'bg-purple-100 text-purple-700' 
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            {showSegmentPanel ? 'Hide' : 'Show'} Topics
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportJSON}
+              className="text-xs px-2 py-1 rounded transition-colors bg-blue-100 text-blue-700 hover:bg-blue-200"
+              title="Export topics and annotations as JSON"
+            >
+              Export JSON
+            </button>
+            <button
+              onClick={() => setShowSegmentPanel(!showSegmentPanel)}
+              className={`text-xs px-2 py-1 rounded transition-colors ${
+                showSegmentPanel
+                  ? "bg-purple-100 text-purple-700"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {showSegmentPanel ? "Hide" : "Show"} Topics
+            </button>
+          </div>
         </div>
-        
+
         {/* Messages with thread structure */}
         <div className="flex-1 overflow-y-auto bg-white">
           <div className="py-4">
@@ -2344,7 +2837,7 @@ const MessageTimeline = ({
               const msgInfo = buildMessageInfo(msg, false);
               const replies = threadReplies.get(msg.id) || [];
               const hasReplies = replies.length > 0;
-              
+
               return (
                 <React.Fragment key={msg.id}>
                   {/* Main message */}
@@ -2356,11 +2849,11 @@ const MessageTimeline = ({
                     isThreadReply={false}
                     colorMap={colorMap}
                   />
-                  
+
                   {/* Thread replies */}
                   {hasReplies && (
                     <div className="mb-2">
-                      {replies.map(reply => {
+                      {replies.map((reply) => {
                         const replyInfo = buildMessageInfo(reply, true);
                         return (
                           <TimelineMessage
@@ -2394,21 +2887,27 @@ const MessageTimeline = ({
           <div className="flex-1 overflow-y-auto p-2 space-y-2">
             {conversationSegments.map((seg) => {
               const color = getSegmentColor(seg.id);
-              const segmentShortId = seg.id?.slice(0, 6) || '??????';
+              const segmentShortId = seg.id?.slice(0, 6) || "??????";
               return (
                 <div
                   key={seg.id}
                   className={`p-2 rounded-lg border-l-4 ${color.border} ${color.bg}`}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <span className={`text-sm font-bold font-mono ${color.text}`}>
+                    <span
+                      className={`text-sm font-bold font-mono ${color.text}`}
+                    >
                       {segmentShortId}
                     </span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                      seg.status === 'RESOLVED' ? 'bg-green-100 text-green-700' :
-                      seg.status === 'STALE' ? 'bg-gray-100 text-gray-500' :
-                      'bg-blue-100 text-blue-700'
-                    }`}>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        seg.status === "RESOLVED"
+                          ? "bg-green-100 text-green-700"
+                          : seg.status === "STALE"
+                          ? "bg-gray-100 text-gray-500"
+                          : "bg-blue-100 text-blue-700"
+                      }`}
+                    >
                       {seg.status}
                     </span>
                   </div>
@@ -2418,7 +2917,7 @@ const MessageTimeline = ({
                   <div className="flex items-center gap-2 mt-1 text-[10px] text-gray-500">
                     <span>{seg.messages.length} msgs</span>
                     <span>·</span>
-                    <span>{seg.participants.join(', ')}</span>
+                    <span>{seg.participants.join(", ")}</span>
                   </div>
                 </div>
               );
@@ -2432,9 +2931,11 @@ const MessageTimeline = ({
 
 const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
   // Get unique group IDs (short UUIDs) for this stack
-  const groupIds = [...new Set(stack.messages.map(m => m.groupId).filter(Boolean))];
-  const stackShortId = stack.id?.slice(0, 6) || '??????';
-  
+  const groupIds = [
+    ...new Set(stack.messages.map((m) => m.groupId).filter(Boolean)),
+  ];
+  const stackShortId = stack.id?.slice(0, 6) || "??????";
+
   return (
     <div className="border rounded-lg bg-white overflow-hidden">
       <div
@@ -2443,14 +2944,16 @@ const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
       >
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-xs font-mono text-gray-400" title={stack.id}>{stackShortId}</span>
+            <span className="text-xs font-mono text-gray-400" title={stack.id}>
+              {stackShortId}
+            </span>
             <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
               {stack.messages.length} msgs
             </span>
             {groupIds.length > 0 && (
               <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-mono">
-                {groupIds.length === 1 
-                  ? groupIds[0]?.slice(0, 6) 
+                {groupIds.length === 1
+                  ? groupIds[0]?.slice(0, 6)
                   : `${groupIds.length} groups`}
               </span>
             )}
@@ -2465,7 +2968,13 @@ const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
       {expanded && (
         <div className="border-t p-2 bg-gray-50 space-y-0.5 max-h-48 overflow-y-auto">
           {stack.messages.map((m) => (
-            <MessageBubble key={m.id} message={m} colorMap={colorMap} compact showGroupIndex />
+            <MessageBubble
+              key={m.id}
+              message={m}
+              colorMap={colorMap}
+              compact
+              showGroupIndex
+            />
           ))}
         </div>
       )}
@@ -2478,12 +2987,28 @@ const StackCard = ({ stack, index, colorMap, expanded, onToggle }) => {
  */
 const StrategyConfigPanel = ({ config, setConfig }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  
+
   const strategies = [
-    { id: 'segment-centric', name: 'Segment-Centric', desc: 'Shows all segments, picks best match' },
-    { id: 'previous-centric', name: 'Previous-Topic', desc: 'Classify relative to the previous topic' },
-    { id: 'hybrid', name: 'Hybrid', desc: 'Previous message + recent segments' },
-    { id: 'single-prompt', name: 'Single Prompt', desc: 'One call with all messages, returns all stacks' }
+    {
+      id: "segment-centric",
+      name: "Segment-Centric",
+      desc: "Shows all segments, picks best match",
+    },
+    {
+      id: "previous-centric",
+      name: "Previous-Topic",
+      desc: "Classify relative to the previous topic",
+    },
+    {
+      id: "hybrid",
+      name: "Hybrid",
+      desc: "Previous message + recent segments",
+    },
+    {
+      id: "single-prompt",
+      name: "Single Prompt",
+      desc: "One call with all messages, returns all stacks",
+    },
   ];
 
   return (
@@ -2495,23 +3020,27 @@ const StrategyConfigPanel = ({ config, setConfig }) => {
         <div className="flex items-center gap-2">
           <span className="font-medium text-gray-700">Strategy:</span>
           <span className="text-purple-600 font-medium">
-            {strategies.find(s => s.id === config.strategy)?.name || 'Hybrid'}
+            {strategies.find((s) => s.id === config.strategy)?.name || "Hybrid"}
           </span>
         </div>
-        <span className="text-gray-400">{isExpanded ? '▼' : '▶'}</span>
+        <span className="text-gray-400">{isExpanded ? "▼" : "▶"}</span>
       </button>
-      
+
       {isExpanded && (
         <div className="px-3 pb-3 space-y-4 border-t bg-white">
           {/* Strategy Selection */}
           <div className="pt-3">
-            <label className="block text-xs font-medium text-gray-500 mb-2">Classification Strategy</label>
+            <label className="block text-xs font-medium text-gray-500 mb-2">
+              Classification Strategy
+            </label>
             <div className="space-y-1">
-              {strategies.map(s => (
+              {strategies.map((s) => (
                 <label
                   key={s.id}
                   className={`flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                    config.strategy === s.id ? 'bg-purple-50 border border-purple-200' : 'hover:bg-gray-50'
+                    config.strategy === s.id
+                      ? "bg-purple-50 border border-purple-200"
+                      : "hover:bg-gray-50"
                   }`}
                 >
                   <input
@@ -2519,84 +3048,108 @@ const StrategyConfigPanel = ({ config, setConfig }) => {
                     name="strategy"
                     value={s.id}
                     checked={config.strategy === s.id}
-                    onChange={(e) => setConfig({ ...config, strategy: e.target.value })}
+                    onChange={(e) =>
+                      setConfig({ ...config, strategy: e.target.value })
+                    }
                     className="text-purple-600"
                   />
                   <div>
-                    <div className="text-sm font-medium text-gray-700">{s.name}</div>
+                    <div className="text-sm font-medium text-gray-700">
+                      {s.name}
+                    </div>
                     <div className="text-xs text-gray-500">{s.desc}</div>
                   </div>
                 </label>
               ))}
             </div>
           </div>
-          
+
           {/* These options only apply to segment-centric and hybrid strategies */}
-          {config.strategy !== 'previous-centric' && config.strategy !== 'single-prompt' && (
-            <>
-              {/* Staleness Threshold - only for hybrid */}
-              {config.strategy === 'hybrid' && (
+          {config.strategy !== "previous-centric" &&
+            config.strategy !== "single-prompt" && (
+              <>
+                {/* Staleness Threshold - only for hybrid */}
+                {config.strategy === "hybrid" && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      Staleness Threshold: {config.stalenessThreshold} min
+                    </label>
+                    <input
+                      type="range"
+                      min="5"
+                      max="120"
+                      step="5"
+                      value={config.stalenessThreshold}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          stalenessThreshold: parseInt(e.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                    <div className="flex justify-between text-[10px] text-gray-400">
+                      <span>5 min</span>
+                      <span>Segments older than this are deprioritized</span>
+                      <span>120 min</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Max Segments - for segment-centric and hybrid */}
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">
-                    Staleness Threshold: {config.stalenessThreshold} min
+                    Max Segments to Show: {config.maxSegmentsToShow}
                   </label>
                   <input
                     type="range"
-                    min="5"
-                    max="120"
-                    step="5"
-                    value={config.stalenessThreshold}
-                    onChange={(e) => setConfig({ ...config, stalenessThreshold: parseInt(e.target.value) })}
+                    min="1"
+                    max="10"
+                    value={config.maxSegmentsToShow}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        maxSegmentsToShow: parseInt(e.target.value),
+                      })
+                    }
                     className="w-full"
                   />
                   <div className="flex justify-between text-[10px] text-gray-400">
-                    <span>5 min</span>
-                    <span>Segments older than this are deprioritized</span>
-                    <span>120 min</span>
+                    <span>1</span>
+                    <span>Fewer = faster, more focused</span>
+                    <span>10</span>
                   </div>
                 </div>
-              )}
-              
-              {/* Max Segments - for segment-centric and hybrid */}
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">
-                  Max Segments to Show: {config.maxSegmentsToShow}
-                </label>
-                <input
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={config.maxSegmentsToShow}
-                  onChange={(e) => setConfig({ ...config, maxSegmentsToShow: parseInt(e.target.value) })}
-                  className="w-full"
-                />
-                <div className="flex justify-between text-[10px] text-gray-400">
-                  <span>1</span>
-                  <span>Fewer = faster, more focused</span>
-                  <span>10</span>
-                </div>
-              </div>
-              
-              {/* Prefer Previous Message - only for hybrid */}
-              {config.strategy === 'hybrid' && (
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-xs font-medium text-gray-500">Prefer Previous Message</div>
-                    <div className="text-[10px] text-gray-400">Strongly weight the immediately preceding message</div>
+
+                {/* Prefer Previous Message - only for hybrid */}
+                {config.strategy === "hybrid" && (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-medium text-gray-500">
+                        Prefer Previous Message
+                      </div>
+                      <div className="text-[10px] text-gray-400">
+                        Strongly weight the immediately preceding message
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={config.preferPreviousMessage}
+                        onChange={(e) =>
+                          setConfig({
+                            ...config,
+                            preferPreviousMessage: e.target.checked,
+                          })
+                        }
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
+                    </label>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={config.preferPreviousMessage}
-                      onChange={(e) => setConfig({ ...config, preferPreviousMessage: e.target.checked })}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
-                  </label>
-                </div>
-              )}
-            </>
-          )}
+                )}
+              </>
+            )}
         </div>
       )}
     </div>
@@ -2653,7 +3206,8 @@ const DebugLog = ({ log }) => (
 // ============================================
 
 // Default API key for internal use
-const DEFAULT_API_KEY = "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";
+const DEFAULT_API_KEY =
+  "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";
 
 // Author ID to display name mapping (for Format B data)
 // Update this mapping for your team members
@@ -2672,23 +3226,33 @@ const CONVERSATION_NAME_MAP = {
 
 // Available models
 const AVAILABLE_MODELS = [
-  { id: 'claude-3-5-haiku-20241022', name: 'Haiku 3.5', description: 'Fast & cheap' },
-  { id: 'claude-3-5-sonnet-20241022', name: 'Sonnet 3.5', description: 'Balanced' },
-  { id: 'claude-3-opus-20240229', name: 'Opus 3', description: 'Most capable' },
+  {
+    id: "claude-3-5-haiku-20241022",
+    name: "Haiku 3.5",
+    description: "Fast & cheap",
+  },
+  {
+    id: "claude-3-5-sonnet-20241022",
+    name: "Sonnet 3.5",
+    description: "Balanced",
+  },
+  { id: "claude-3-opus-20240229", name: "Opus 3", description: "Most capable" },
 ];
 
 export default function StackGrouperPOC() {
   const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
-  const [selectedModel, setSelectedModel] = useState('claude-3-5-haiku-20241022');
-  
+  const [selectedModel, setSelectedModel] = useState(
+    "claude-3-5-haiku-20241022"
+  );
+
   // Strategy configuration for LLM segmentation
   const [strategyConfig, setStrategyConfig] = useState({
-    strategy: 'hybrid', // 'segment-centric' | 'previous-centric' | 'hybrid'
+    strategy: "hybrid", // 'segment-centric' | 'previous-centric' | 'hybrid'
     stalenessThreshold: 30, // minutes - segments older than this are less relevant
     maxSegmentsToShow: 5, // max segments to include in prompt
-    preferPreviousMessage: true // strongly weight previous message
+    preferPreviousMessage: true, // strongly weight previous message
   });
-  
+
   const [jsonInput, setJsonInput] = useState("");
   const [currentStep, setCurrentStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
@@ -2701,11 +3265,11 @@ export default function StackGrouperPOC() {
   const [stackFormationLog, setStackFormationLog] = useState([]);
 
   // LLM Segmentation state
-  const [segmentationMode, setSegmentationMode] = useState('deterministic'); // 'deterministic' | 'llm'
+  const [segmentationMode, setSegmentationMode] = useState("deterministic"); // 'deterministic' | 'llm'
   const [llmSegments, setLlmSegments] = useState([]);
   const [llmAnnotations, setLlmAnnotations] = useState([]);
   const [selectedConversationId, setSelectedConversationId] = useState(null);
-  const [viewMode, setViewMode] = useState('timeline'); // 'timeline' | 'cards'
+  const [viewMode, setViewMode] = useState("timeline"); // 'timeline' | 'cards'
 
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, label: "" });
@@ -2722,60 +3286,77 @@ export default function StackGrouperPOC() {
   // Group messages by conversation for the timeline view
   const conversationGroups = useMemo(() => {
     const groups = new Map();
-    
+
     // Sort messages chronologically first
     const sorted = [...rawMessages].sort(
       (a, b) => new Date(a.created_at) - new Date(b.created_at)
     );
-    
-    sorted.forEach(msg => {
+
+    sorted.forEach((msg) => {
       if (!groups.has(msg.conversation_id)) {
         groups.set(msg.conversation_id, {
           id: msg.conversation_id,
-          name: msg.conversation_name || 'DM',
+          name: msg.conversation_name || "DM",
           messages: [],
           participants: new Set(),
-          isChannel: !!msg.conversation_name && msg.conversation_name.trim().length > 0
+          isChannel:
+            !!msg.conversation_name && msg.conversation_name.trim().length > 0,
         });
       }
       const group = groups.get(msg.conversation_id);
       group.messages.push(msg);
       group.participants.add(msg.author);
     });
-    
+
     // Convert to array, convert participant Sets to arrays, sort by message count
     return Array.from(groups.values())
-      .map(g => ({ ...g, participants: Array.from(g.participants) }))
+      .map((g) => ({ ...g, participants: Array.from(g.participants) }))
       .sort((a, b) => b.messages.length - a.messages.length);
   }, [rawMessages]);
 
   // Get annotation for a message
   const getAnnotationForMessage = (messageId) => {
-    return llmAnnotations.find(a => a.messageId === messageId);
+    return llmAnnotations.find((a) => a.messageId === messageId);
   };
 
   // Get segment for a message
   const getSegmentForMessage = (messageId) => {
     const annotation = getAnnotationForMessage(messageId);
     if (!annotation) return null;
-    return llmSegments.find(s => s.id === annotation.segmentId);
+    return llmSegments.find((s) => s.id === annotation.segmentId);
   };
 
   // Get segment index (for letter: A, B, C...)
   const getSegmentIndex = (segmentId) => {
-    return llmSegments.findIndex(s => s.id === segmentId);
+    return llmSegments.findIndex((s) => s.id === segmentId);
   };
 
   // Segment colors for visual distinction
   const segmentColors = [
-    { border: 'border-l-blue-500', bg: 'bg-blue-50', text: 'text-blue-700' },
-    { border: 'border-l-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700' },
-    { border: 'border-l-purple-500', bg: 'bg-purple-50', text: 'text-purple-700' },
-    { border: 'border-l-amber-500', bg: 'bg-amber-50', text: 'text-amber-700' },
-    { border: 'border-l-rose-500', bg: 'bg-rose-50', text: 'text-rose-700' },
-    { border: 'border-l-cyan-500', bg: 'bg-cyan-50', text: 'text-cyan-700' },
-    { border: 'border-l-orange-500', bg: 'bg-orange-50', text: 'text-orange-700' },
-    { border: 'border-l-indigo-500', bg: 'bg-indigo-50', text: 'text-indigo-700' },
+    { border: "border-l-blue-500", bg: "bg-blue-50", text: "text-blue-700" },
+    {
+      border: "border-l-emerald-500",
+      bg: "bg-emerald-50",
+      text: "text-emerald-700",
+    },
+    {
+      border: "border-l-purple-500",
+      bg: "bg-purple-50",
+      text: "text-purple-700",
+    },
+    { border: "border-l-amber-500", bg: "bg-amber-50", text: "text-amber-700" },
+    { border: "border-l-rose-500", bg: "bg-rose-50", text: "text-rose-700" },
+    { border: "border-l-cyan-500", bg: "bg-cyan-50", text: "text-cyan-700" },
+    {
+      border: "border-l-orange-500",
+      bg: "bg-orange-50",
+      text: "text-orange-700",
+    },
+    {
+      border: "border-l-indigo-500",
+      bg: "bg-indigo-50",
+      text: "text-indigo-700",
+    },
   ];
 
   const getSegmentColor = (segmentId) => {
@@ -2817,24 +3398,33 @@ export default function StackGrouperPOC() {
       const sample = data[0];
       const isFormatA = !!sample?.workspace_event;
       const isFormatB = !!sample?.markdown_content && !!sample?.author_id;
-      const formatName = isFormatA ? 'A (nested workspace_event)' : isFormatB ? 'B (flat message array)' : 'Unknown';
+      const formatName = isFormatA
+        ? "A (nested workspace_event)"
+        : isFormatB
+        ? "B (flat message array)"
+        : "Unknown";
 
       addDebugLog({
         title: "Data Format Detection",
         request: `Analyzing ${data.length} items...`,
-        response: `Detected format: ${formatName}\nSample keys: ${Object.keys(sample).join(', ')}`
+        response: `Detected format: ${formatName}\nSample keys: ${Object.keys(
+          sample
+        ).join(", ")}`,
       });
 
       const messages = extractMessages(data);
-      if (messages.length === 0) throw new Error("No valid messages found (all filtered out - check for empty content)");
+      if (messages.length === 0)
+        throw new Error(
+          "No valid messages found (all filtered out - check for empty content)"
+        );
 
       setRawMessages(messages);
-      
+
       // Reset LLM segmentation state
       setLlmSegments([]);
       setLlmAnnotations([]);
 
-      if (segmentationMode === 'deterministic') {
+      if (segmentationMode === "deterministic") {
         const units = createAtomicUnits(messages);
         setAtomicUnits(units);
 
@@ -2893,9 +3483,12 @@ export default function StackGrouperPOC() {
 
       addDebugLog({
         title: "Step 1: LLM Segmentation Complete",
-        response: `${rawMessages.length} messages → ${result.segments.length} segments\n` +
-          `Structural: ${result.annotations.filter(a => a.method === 'STRUCTURAL').length}\n` +
-          `LLM: ${result.annotations.filter(a => a.method === 'LLM').length}`,
+        response:
+          `${rawMessages.length} messages → ${result.segments.length} segments\n` +
+          `Structural: ${
+            result.annotations.filter((a) => a.method === "STRUCTURAL").length
+          }\n` +
+          `LLM: ${result.annotations.filter((a) => a.method === "LLM").length}`,
       });
 
       // In LLM mode, Step 1 is the final step (no need for Steps 2 & 3)
@@ -2963,13 +3556,17 @@ Rules:
 Use the field "id" to reference each message in message_ids.`;
 
     try {
-      console.log('[Single Prompt] Starting with', rawMessages.length, 'messages');
-      
+      console.log(
+        "[Single Prompt] Starting with",
+        rawMessages.length,
+        "messages"
+      );
+
       addDebugLog({
         title: "Single Prompt: Sending request",
         system: systemPrompt.slice(0, 500) + "...",
         request: `Sending ${rawMessages.length} messages to LLM`,
-        response: "(waiting...)"
+        response: "(waiting...)",
       });
 
       setProgress({ current: 1, total: 2, label: "Sending to LLM..." });
@@ -2977,14 +3574,24 @@ Use the field "id" to reference each message in message_ids.`;
       // Format messages as JSON for the prompt
       const messagesJson = JSON.stringify(rawMessages, null, 2);
       const userMessage = `Here are the messages to group into stacks:\n\n${messagesJson}`;
-      
-      console.log('[Single Prompt] User message length:', userMessage.length, 'chars');
+
+      console.log(
+        "[Single Prompt] User message length:",
+        userMessage.length,
+        "chars"
+      );
 
       // Calculate max tokens based on message count (rough estimate: ~100 tokens per message for response)
-      const estimatedMaxTokens = Math.min(Math.max(4000, rawMessages.length * 150), 64000);
+      const estimatedMaxTokens = Math.min(
+        Math.max(4000, rawMessages.length * 150),
+        64000
+      );
 
-      console.log('[Single Prompt] Calling API with max tokens:', estimatedMaxTokens);
-      
+      console.log(
+        "[Single Prompt] Calling API with max tokens:",
+        estimatedMaxTokens
+      );
+
       // Use longer timeout for single-prompt (5 minutes) since it processes all messages at once
       const response = await callAnthropic(
         apiKey,
@@ -2995,7 +3602,11 @@ Use the field "id" to reference each message in message_ids.`;
         300000 // 5 minute timeout
       );
 
-      console.log('[Single Prompt] Got response, length:', response?.length, 'chars');
+      console.log(
+        "[Single Prompt] Got response, length:",
+        response?.length,
+        "chars"
+      );
       setProgress({ current: 2, total: 2, label: "Parsing response..." });
 
       // Parse the response JSON
@@ -3007,7 +3618,7 @@ Use the field "id" to reference each message in message_ids.`;
         if (codeBlockMatch) {
           cleanedResponse = codeBlockMatch[1].trim();
         }
-        
+
         // Try to parse the cleaned response directly first
         try {
           parsedResponse = JSON.parse(cleanedResponse);
@@ -3021,7 +3632,11 @@ Use the field "id" to reference each message in message_ids.`;
           }
         }
       } catch (parseErr) {
-        throw new Error(`Failed to parse LLM response: ${parseErr.message}\n\nResponse: ${response.slice(0, 500)}...`);
+        throw new Error(
+          `Failed to parse LLM response: ${
+            parseErr.message
+          }\n\nResponse: ${response.slice(0, 500)}...`
+        );
       }
 
       if (!parsedResponse.stacks || !Array.isArray(parsedResponse.stacks)) {
@@ -3034,15 +3649,15 @@ Use the field "id" to reference each message in message_ids.`;
 
       parsedResponse.stacks.forEach((stack, stackIndex) => {
         const segmentId = crypto.randomUUID();
-        
+
         // Get message objects for this stack
         const stackMessageIds = stack.message_ids || [];
-        const stackMessages = stackMessageIds.map(id => 
-          rawMessages.find(m => m.id === id)
-        ).filter(Boolean);
+        const stackMessages = stackMessageIds
+          .map((id) => rawMessages.find((m) => m.id === id))
+          .filter(Boolean);
 
         // Extract unique participants
-        const participants = [...new Set(stackMessages.map(m => m.author))];
+        const participants = [...new Set(stackMessages.map((m) => m.author))];
 
         // Create segment
         segments.push({
@@ -3052,21 +3667,22 @@ Use the field "id" to reference each message in message_ids.`;
           messages: stackMessages,
           messageIds: stackMessageIds,
           participants: participants,
-          status: 'ACTIVE'
+          status: "ACTIVE",
         });
 
         // Create annotations for each message
-        stackMessageIds.forEach(messageId => {
+        stackMessageIds.forEach((messageId) => {
           annotations.push({
             messageId: messageId,
-            conversationId: rawMessages.find(m => m.id === messageId)?.conversation_id,
+            conversationId: rawMessages.find((m) => m.id === messageId)
+              ?.conversation_id,
             attachesTo: null,
             segmentId: segmentId,
-            role: 'GROUPED',
+            role: "GROUPED",
             confidence: 1.0,
-            method: 'SINGLE_PROMPT',
+            method: "SINGLE_PROMPT",
             reasoning: `Grouped into stack: ${stack.title}`,
-            annotatedAt: new Date()
+            annotatedAt: new Date(),
           });
         });
       });
@@ -3076,8 +3692,11 @@ Use the field "id" to reference each message in message_ids.`;
 
       addDebugLog({
         title: "Single Prompt: Complete",
-        response: `${rawMessages.length} messages → ${segments.length} stacks\n` +
-          parsedResponse.stacks.map((s, i) => `• ${s.title} (${s.message_ids?.length || 0} msgs)`).join('\n')
+        response:
+          `${rawMessages.length} messages → ${segments.length} stacks\n` +
+          parsedResponse.stacks
+            .map((s, i) => `• ${s.title} (${s.message_ids?.length || 0} msgs)`)
+            .join("\n"),
       });
 
       setMaxStep(1);
@@ -3100,17 +3719,17 @@ Use the field "id" to reference each message in message_ids.`;
     // Convert segments directly to stacks - each segment becomes a stack
     const newStacks = llmSegments.map((segment) => ({
       id: segment.id,
-      title: segment.summary?.slice(0, 50) || 'Untitled',
-      summary: segment.summary || '',
-      messages: segment.messages.map(m => ({ ...m, groupId: segment.id })),
+      title: segment.summary?.slice(0, 50) || "Untitled",
+      summary: segment.summary || "",
+      messages: segment.messages.map((m) => ({ ...m, groupId: segment.id })),
     }));
 
     setStacks(newStacks);
     setValidatedUnits([]); // Clear since we're skipping Step 2
-    
+
     addDebugLog({
       title: "LLM Segments → Stacks",
-      response: `${llmSegments.length} segments converted directly to stacks (skipped Step 2)`
+      response: `${llmSegments.length} segments converted directly to stacks (skipped Step 2)`,
     });
 
     setMaxStep(3);
@@ -3166,15 +3785,21 @@ Use the field "id" to reference each message in message_ids.`;
         );
 
         addDebugLog({
-          title: `Step 2: Semantic Regroup Batch ${batchIdx + 1}/${batches.length} (Groups ${
-            batchStart + 1
-          }-${batchStart + batch.length})`,
+          title: `Step 2: Semantic Regroup Batch ${batchIdx + 1}/${
+            batches.length
+          } (Groups ${batchStart + 1}-${batchStart + batch.length})`,
           system: system,
           request: userMessage,
           response: "(waiting...)",
         });
 
-        const response = await callAnthropic(apiKey, system, userMessage, 2000, selectedModel);
+        const response = await callAnthropic(
+          apiKey,
+          system,
+          userMessage,
+          2000,
+          selectedModel
+        );
         updateLastDebugLog({ response });
 
         let result;
@@ -3293,7 +3918,10 @@ Use the field "id" to reference each message in message_ids.`;
       setCurrentStep(2);
     } catch (err) {
       setError(err.message);
-      addDebugLog({ title: "Step 2: Semantic Regroup Error", error: err.message });
+      addDebugLog({
+        title: "Step 2: Semantic Regroup Error",
+        error: err.message,
+      });
     } finally {
       setLoading(false);
       setProgress({ current: 0, total: 0, label: "" });
@@ -3344,7 +3972,13 @@ Use the field "id" to reference each message in message_ids.`;
           response: "(waiting...)",
         });
 
-        const response = await callAnthropic(apiKey, system, userMessage, 300, selectedModel);
+        const response = await callAnthropic(
+          apiKey,
+          system,
+          userMessage,
+          300,
+          selectedModel
+        );
         updateLastDebugLog({ response });
 
         let decision;
@@ -3362,7 +3996,10 @@ Use the field "id" to reference each message in message_ids.`;
         const logEntry = { unitIndex: i, unit, decision };
 
         // Tag messages with their source group ID (UUID)
-        const taggedMessages = unit.messages.map(m => ({ ...m, groupId: unit.id }));
+        const taggedMessages = unit.messages.map((m) => ({
+          ...m,
+          groupId: unit.id,
+        }));
 
         if (
           decision.action === "join" &&
@@ -3403,7 +4040,10 @@ Use the field "id" to reference each message in message_ids.`;
       });
     } catch (err) {
       setError(err.message);
-      addDebugLog({ title: "Step 3: LLM Stack Formation Error", error: err.message });
+      addDebugLog({
+        title: "Step 3: LLM Stack Formation Error",
+        error: err.message,
+      });
     } finally {
       setLoading(false);
       setProgress({ current: 0, total: 0, label: "" });
@@ -3481,34 +4121,42 @@ Use the field "id" to reference each message in message_ids.`;
             <div className="flex-1 p-4 flex flex-col">
               {/* Mode Toggle */}
               <div className="mb-4 p-3 bg-white rounded-lg border">
-                <div className="text-sm font-medium text-gray-700 mb-2">Segmentation Mode</div>
+                <div className="text-sm font-medium text-gray-700 mb-2">
+                  Segmentation Mode
+                </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => setSegmentationMode('deterministic')}
+                    onClick={() => setSegmentationMode("deterministic")}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      segmentationMode === 'deterministic'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      segmentationMode === "deterministic"
+                        ? "bg-blue-500 text-white"
+                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                     }`}
                   >
                     <div className="font-medium">Deterministic</div>
-                    <div className="text-[10px] opacity-80">Rules-based grouping (fast)</div>
+                    <div className="text-[10px] opacity-80">
+                      Rules-based grouping (fast)
+                    </div>
                   </button>
                   <button
-                    onClick={() => setSegmentationMode('llm')}
+                    onClick={() => setSegmentationMode("llm")}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      segmentationMode === 'llm'
-                        ? 'bg-purple-500 text-white'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      segmentationMode === "llm"
+                        ? "bg-purple-500 text-white"
+                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                     }`}
                   >
                     <div className="font-medium">LLM Segmentation</div>
-                    <div className="text-[10px] opacity-80">Per-message classification</div>
+                    <div className="text-[10px] opacity-80">
+                      Per-message classification
+                    </div>
                   </button>
                 </div>
-                {segmentationMode === 'llm' && (
+                {segmentationMode === "llm" && (
                   <div className="mt-2 text-[10px] text-purple-600 bg-purple-50 px-2 py-1 rounded">
-                    LLM mode processes each message individually, classifying its role (INITIATES, DEVELOPS, RESPONDS, RESOLVES, REACTS) and determining which conversation segment it belongs to.
+                    LLM mode processes each message individually, classifying
+                    its role (INITIATES, DEVELOPS, RESPONDS, RESOLVES, REACTS)
+                    and determining which conversation segment it belongs to.
                   </div>
                 )}
               </div>
@@ -3521,12 +4169,14 @@ Use the field "id" to reference each message in message_ids.`;
               />
               <button
                 onClick={handleProcessInput}
-                disabled={!jsonInput.trim() || (segmentationMode === 'llm' && !apiKey)}
+                disabled={
+                  !jsonInput.trim() || (segmentationMode === "llm" && !apiKey)
+                }
                 className="mt-3 self-start px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-lg text-sm font-medium"
               >
                 Process → Step 1
               </button>
-              {segmentationMode === 'llm' && !apiKey && (
+              {segmentationMode === "llm" && !apiKey && (
                 <div className="mt-2 text-xs text-amber-600">
                   Note: LLM mode requires an API key (enter in header)
                 </div>
@@ -3538,7 +4188,7 @@ Use the field "id" to reference each message in message_ids.`;
           {currentStep === 1 && (
             <div className="flex-1 flex flex-col overflow-hidden">
               {/* Deterministic Mode */}
-              {segmentationMode === 'deterministic' && (
+              {segmentationMode === "deterministic" && (
                 <>
                   <div className="px-4 py-2 border-b bg-white flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -3560,7 +4210,11 @@ Use the field "id" to reference each message in message_ids.`;
                   <div className="flex-1 overflow-y-auto p-4">
                     <div className="grid gap-2 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {atomicUnits.map((unit) => (
-                        <UnitCard key={unit.id} unit={unit} colorMap={colorMap} />
+                        <UnitCard
+                          key={unit.id}
+                          unit={unit}
+                          colorMap={colorMap}
+                        />
                       ))}
                     </div>
                   </div>
@@ -3568,7 +4222,7 @@ Use the field "id" to reference each message in message_ids.`;
               )}
 
               {/* LLM Segmentation Mode */}
-              {segmentationMode === 'llm' && (
+              {segmentationMode === "llm" && (
                 <>
                   {/* Header bar */}
                   <div className="px-4 py-2 border-b bg-white">
@@ -3579,28 +4233,29 @@ Use the field "id" to reference each message in message_ids.`;
                         </span>
                         <span className="text-sm text-gray-600">
                           {rawMessages.length} msgs
-                          {llmSegments.length > 0 && ` → ${llmSegments.length} segments`}
+                          {llmSegments.length > 0 &&
+                            ` → ${llmSegments.length} segments`}
                         </span>
-                        
+
                         {/* View mode toggle */}
                         {llmSegments.length > 0 && (
                           <div className="flex items-center gap-1 ml-4 bg-gray-100 rounded p-0.5">
                             <button
-                              onClick={() => setViewMode('timeline')}
+                              onClick={() => setViewMode("timeline")}
                               className={`px-2 py-1 text-xs rounded transition-colors ${
-                                viewMode === 'timeline' 
-                                  ? 'bg-white text-gray-800 shadow-sm' 
-                                  : 'text-gray-500 hover:text-gray-700'
+                                viewMode === "timeline"
+                                  ? "bg-white text-gray-800 shadow-sm"
+                                  : "text-gray-500 hover:text-gray-700"
                               }`}
                             >
                               Timeline
                             </button>
                             <button
-                              onClick={() => setViewMode('cards')}
+                              onClick={() => setViewMode("cards")}
                               className={`px-2 py-1 text-xs rounded transition-colors ${
-                                viewMode === 'cards' 
-                                  ? 'bg-white text-gray-800 shadow-sm' 
-                                  : 'text-gray-500 hover:text-gray-700'
+                                viewMode === "cards"
+                                  ? "bg-white text-gray-800 shadow-sm"
+                                  : "text-gray-500 hover:text-gray-700"
                               }`}
                             >
                               Cards
@@ -3610,11 +4265,21 @@ Use the field "id" to reference each message in message_ids.`;
                       </div>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={strategyConfig.strategy === 'single-prompt' ? handleSinglePromptSegmentation : handleLLMSegmentation}
-                          disabled={loading || !apiKey || rawMessages.length === 0}
+                          onClick={
+                            strategyConfig.strategy === "single-prompt"
+                              ? handleSinglePromptSegmentation
+                              : handleLLMSegmentation
+                          }
+                          disabled={
+                            loading || !apiKey || rawMessages.length === 0
+                          }
                           className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded text-sm font-medium"
                         >
-                          {loading ? "⟳ Processing..." : (strategyConfig.strategy === 'single-prompt' ? "Run Single-Prompt" : "Run LLM Segmentation")}
+                          {loading
+                            ? "⟳ Processing..."
+                            : strategyConfig.strategy === "single-prompt"
+                            ? "Run Single-Prompt"
+                            : "Run LLM Segmentation"}
                         </button>
                         {llmSegments.length > 0 && !loading && (
                           <button
@@ -3626,14 +4291,14 @@ Use the field "id" to reference each message in message_ids.`;
                         )}
                       </div>
                     </div>
-                    
+
                     {/* Strategy Configuration Panel */}
-                    <StrategyConfigPanel 
-                      config={strategyConfig} 
-                      setConfig={setStrategyConfig} 
+                    <StrategyConfigPanel
+                      config={strategyConfig}
+                      setConfig={setStrategyConfig}
                     />
                   </div>
-                  
+
                   {/* Content area */}
                   <div className="flex-1 flex overflow-hidden">
                     {/* Empty state */}
@@ -3642,25 +4307,34 @@ Use the field "id" to reference each message in message_ids.`;
                         <div className="text-center">
                           <div className="text-lg mb-2">Ready to process</div>
                           <div className="text-sm">
-                            Click "{strategyConfig.strategy === 'single-prompt' ? 'Run Single-Prompt' : 'Run LLM Segmentation'}" to classify {rawMessages.length} messages
+                            Click "
+                            {strategyConfig.strategy === "single-prompt"
+                              ? "Run Single-Prompt"
+                              : "Run LLM Segmentation"}
+                            " to classify {rawMessages.length} messages
                           </div>
                         </div>
                       </div>
                     )}
-                    
+
                     {/* Timeline view (Slack-like) */}
-                    {llmSegments.length > 0 && viewMode === 'timeline' && (
+                    {llmSegments.length > 0 && viewMode === "timeline" && (
                       <>
                         <ConversationSidebar
                           conversations={conversationGroups}
-                          selectedId={selectedConversationId || conversationGroups[0]?.id}
+                          selectedId={
+                            selectedConversationId || conversationGroups[0]?.id
+                          }
                           onSelect={(id) => setSelectedConversationId(id)}
                           llmSegments={llmSegments}
                           llmAnnotations={llmAnnotations}
                         />
                         <MessageTimeline
                           conversation={conversationGroups.find(
-                            c => c.id === (selectedConversationId || conversationGroups[0]?.id)
+                            (c) =>
+                              c.id ===
+                              (selectedConversationId ||
+                                conversationGroups[0]?.id)
                           )}
                           llmSegments={llmSegments}
                           llmAnnotations={llmAnnotations}
@@ -3672,9 +4346,9 @@ Use the field "id" to reference each message in message_ids.`;
                         />
                       </>
                     )}
-                    
+
                     {/* Cards view (original) */}
-                    {llmSegments.length > 0 && viewMode === 'cards' && (
+                    {llmSegments.length > 0 && viewMode === "cards" && (
                       <div className="flex-1 overflow-y-auto p-4">
                         <div className="grid gap-3 grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
                           {llmSegments.map((segment, index) => (
@@ -3730,8 +4404,12 @@ Use the field "id" to reference each message in message_ids.`;
                                 : "bg-blue-50 text-blue-700"
                             }`}
                           >
-                            <span className="font-mono">{typeof item.unit === 'string' ? item.unit.slice(0, 6) : item.unit}</span>: {item.action}{" "}
-                            {item.reason && `- ${item.reason}`}
+                            <span className="font-mono">
+                              {typeof item.unit === "string"
+                                ? item.unit.slice(0, 6)
+                                : item.unit}
+                            </span>
+                            : {item.action} {item.reason && `- ${item.reason}`}
                           </div>
                         ))}
                       </div>
@@ -3798,8 +4476,11 @@ Use the field "id" to reference each message in message_ids.`;
                       }`}
                     >
                       <div className="flex justify-between mb-1">
-                        <span className="font-medium font-mono" title={entry.unit?.id}>
-                          {entry.unit?.id?.slice(0, 6) || '??????'}
+                        <span
+                          className="font-medium font-mono"
+                          title={entry.unit?.id}
+                        >
+                          {entry.unit?.id?.slice(0, 6) || "??????"}
                         </span>
                         <span
                           className={
@@ -3824,13 +4505,21 @@ Use the field "id" to reference each message in message_ids.`;
               <div className="w-1/2 flex flex-col overflow-hidden">
                 <div className="px-4 py-2 border-b bg-white flex items-center justify-between">
                   <span className="text-sm font-medium">
-                    Stacks ({stacks.filter(s => showSingleMessageStacks || s.messages.length > 1).length})
+                    Stacks (
+                    {
+                      stacks.filter(
+                        (s) => showSingleMessageStacks || s.messages.length > 1
+                      ).length
+                    }
+                    )
                   </span>
                   <label className="flex items-center gap-1.5 text-xs text-gray-600">
                     <input
                       type="checkbox"
                       checked={showSingleMessageStacks}
-                      onChange={(e) => setShowSingleMessageStacks(e.target.checked)}
+                      onChange={(e) =>
+                        setShowSingleMessageStacks(e.target.checked)
+                      }
                       className="rounded"
                     />
                     Show single message stacks
@@ -3838,7 +4527,10 @@ Use the field "id" to reference each message in message_ids.`;
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 space-y-2">
                   {stacks
-                    .filter(stack => showSingleMessageStacks || stack.messages.length > 1)
+                    .filter(
+                      (stack) =>
+                        showSingleMessageStacks || stack.messages.length > 1
+                    )
                     .map((stack, i) => (
                       <StackCard
                         key={stack.id}
@@ -3861,9 +4553,11 @@ Use the field "id" to reference each message in message_ids.`;
 
         {/* Debug Panel - Collapsible */}
         {showDebug && (
-          <div className={`border-l bg-gray-900 flex flex-col overflow-hidden transition-all duration-200 ${
-            debugLogs.length > 0 ? 'w-96' : 'w-12'
-          }`}>
+          <div
+            className={`border-l bg-gray-900 flex flex-col overflow-hidden transition-all duration-200 ${
+              debugLogs.length > 0 ? "w-96" : "w-12"
+            }`}
+          >
             <div className="px-3 py-2 border-b border-gray-700 flex items-center justify-between gap-2">
               {debugLogs.length > 0 ? (
                 <>
@@ -3878,7 +4572,10 @@ Use the field "id" to reference each message in message_ids.`;
                   </button>
                 </>
               ) : (
-                <span className="text-xs text-gray-500 writing-mode-vertical" style={{ writingMode: 'vertical-rl' }}>
+                <span
+                  className="text-xs text-gray-500 writing-mode-vertical"
+                  style={{ writingMode: "vertical-rl" }}
+                >
                   Debug
                 </span>
               )}
